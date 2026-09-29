@@ -1,0 +1,26 @@
+models:
+  base_url: https://api.siliconflow.cn/v1
+  agent_model: deepseek-ai/DeepSeek-V4-Flash
+  target_model: Qwen/Qwen2.5-7B-Instruct
+  api_key_env: SILICONFLOW_API_KEY
+
+search:
+  seed_questions_per_point: 1
+  adaptive_iterations_per_point: 1
+  max_initial_points: 1
+  max_discovered_points_per_subtask: 1
+  random_seed: 240616714
+
+limits:
+  max_total_samples: 2
+  max_attempts_per_request: 4
+  request_timeout_seconds: 120
+  max_output_tokens: 1024
+
+output_root: /data/liuxingtong/outputs/autodetect-smallscale
+
+subtasks:
+  - group: format
+    name: text format
+    knowledge_points:
+      - list format
