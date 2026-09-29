@@ -1,0 +1,46 @@
+models:
+  base_url: https://api.siliconflow.cn/v1
+  agent_model: deepseek-ai/DeepSeek-V4-Flash
+  target_model: Qwen/Qwen2.5-7B-Instruct
+  api_key_env: SILICONFLOW_API_KEY
+
+search:
+  seed_questions_per_point: 2
+  adaptive_iterations_per_point: 3
+  max_initial_points: 12
+  max_discovered_points_per_subtask: 1
+  random_seed: 240616714
+
+limits:
+  max_total_samples: 80
+  max_attempts_per_request: 4
+  request_timeout_seconds: 120
+  max_output_tokens: 1024
+
+output_root: /data/liuxingtong/outputs/autodetect-smallscale
+
+subtasks:
+  - group: format
+    name: text format
+    knowledge_points:
+      - list format
+      - table format
+      - json format
+      - markdown format
+  - group: content
+    name: word constraint
+    knowledge_points:
+      - specific words
+      - excluded words
+  - group: general constraints
+    name: scenario simulation
+    knowledge_points:
+      - narrative scenario
+      - dialogue scenario
+      - descriptive scenario
+  - group: general constraints
+    name: emotional tone
+    knowledge_points:
+      - positive tone
+      - negative tone
+      - neutral tone
