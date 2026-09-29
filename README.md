@@ -87,6 +87,20 @@ python count_res.py
 - Fine-tuning code: [llm_finetuning](https://github.com/ssbuild/llm_finetuning)
 - Evaluation scripts: [IFEval](https://github.com/google-research/google-research/tree/master/instruction_following_eval), [MetaMath](https://github.com/meta-math/MetaMath), and [HumanEval](https://github.com/openai/human-eval)
 
+## SiliconFlow small-scale reproduction
+
+This branch includes a CPU-only, API-based reproduction of AutoDetect's
+instruction-following weakness-detection trend. It uses
+`deepseek-ai/DeepSeek-V4-Flash` for the AutoDetect roles and judge,
+`Qwen/Qwen2.5-7B-Instruct` as the target, 60 planned initial samples, and an
+80-sample hard cap.
+
+See [the runbook](docs/siliconflow-reproduction-runbook.md) for offline tests,
+dry-run, smoke, live run, resume, and report commands. See
+[the pitfall log](docs/reproduction-pitfalls.md) for observed setup/API issues
+and code-inspection findings. Credentials are loaded from an external
+environment file and must never be committed.
+
 
 ## Citation
 ```
