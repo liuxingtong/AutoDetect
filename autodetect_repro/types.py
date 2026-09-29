@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -45,3 +45,54 @@ class RunConfig:
     limits: LimitsConfig
     subtasks: Tuple[SubtaskConfig, ...]
     output_root: Path
+
+
+@dataclass(frozen=True)
+class KnowledgePoint:
+    group: str
+    subtask: str
+    name: str
+    discovered: bool = False
+
+
+@dataclass(frozen=True)
+class Question:
+    group: str
+    subtask: str
+    knowledge_point: str
+    key_point: str
+    prompt: str
+    phase: str
+    iteration: int
+    ordinal: int
+
+
+@dataclass(frozen=True)
+class SampleRecord:
+    sample_id: str
+    group: str
+    subtask: str
+    knowledge_point: str
+    phase: str
+    iteration: int
+    ordinal: int
+    prompt: str
+    key_point: str
+    answer: str
+    reference_answer: str
+    comparison: str
+    score: Optional[float]
+    is_weakness: bool
+    status: str
+    error: Optional[str]
+    request_count: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+@dataclass(frozen=True)
+class AssessorDecision:
+    accepted: bool
+    point: Optional[KnowledgePoint]
+    explanation: str
