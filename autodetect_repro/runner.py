@@ -229,6 +229,28 @@ class ExperimentRunner:
             if record.group == subtask.group and record.subtask == subtask.name
         ]
 
+    def _configured_points(self) -> Tuple[KnowledgePoint, ...]:
+        return tuple(
+            KnowledgePoint(subtask.group, subtask.name, name)
+            for subtask in self.config.subtasks
+            for name in subtask.knowledge_points
+        )
+
+    def _persisted_discovered_point(
+        self, subtask: SubtaskConfig
+    ) -> Optional[KnowledgePoint]:
+        configured = {name.casefold() for name in subtask.knowledge_points}
+        for record in self._records:
+            if (
+                record.group == subtask.group
+                and record.subtask == subtask.name
+                and record.knowledge_point.casefold() not in configured
+            ):
+                return KnowledgePoint(
+                    subtask.group, subtask.name, record.knowledge_point, True
+                )
+        return None
+
     def _load_existing(self) -> None:
         if self.store is None:
             raise RunnerError("checkpoint store is not initialized")
@@ -260,7 +282,13 @@ class ExperimentRunner:
     def run(self) -> RunSummary:
         self.store = CheckpointStore(self.run_dir, self.config)
         self._load_existing()
-        points: Sequence[KnowledgePoint] = self.examiner.select_taxonomy()
+        if len(self._records) >= self.config.limits.max_total_samples:
+            return self._summary()
+        points: Sequence[KnowledgePoint]
+        if self._records:
+            points = self._configured_points()
+        else:
+            points = self.examiner.select_taxonomy()
         point_lookup: Dict[Tuple[str, str], List[KnowledgePoint]] = {}
         for point in points:
             point_lookup.setdefault((point.group, point.subtask), []).append(point)
@@ -273,11 +301,15 @@ class ExperimentRunner:
 
             if self._halted:
                 return self._summary()
-            decision = self.assessor.propose(
-                subtask, self._subtask_history(subtask)
-            )
-            if decision.accepted and decision.point is not None:
-                self._run_point(decision.point)
+            discovered = self._persisted_discovered_point(subtask)
+            if discovered is not None:
+                self._run_point(discovered)
+            else:
+                decision = self.assessor.propose(
+                    subtask, self._subtask_history(subtask)
+                )
+                if decision.accepted and decision.point is not None:
+                    self._run_point(decision.point)
                 if self._halted:
                     return self._summary()
 

@@ -209,6 +209,56 @@ def test_resume_skips_completed_sample_id_without_evaluating_it_again(tmp_path):
     assert summary.scheduled == 3
 
 
+def test_resume_reuses_persisted_taxonomy_without_examiner_call(tmp_path):
+    config = small_config(seeds=1, adaptive=1)
+    run_dir = tmp_path / "run"
+    first, _, _, _, _ = make_runner(config, run_dir)
+    first.run()
+    resumed, _, _, evaluator, assessor = make_runner(config, run_dir)
+
+    summary = resumed.run()
+
+    assert resumed.examiner.calls == 0
+    assert evaluator.calls == []
+    assert assessor.calls == 1
+    assert summary.scheduled == 2
+
+
+def test_resume_reuses_discovered_point_without_assessor_call(tmp_path):
+    config = small_config(seeds=1, adaptive=1)
+    run_dir = tmp_path / "run"
+    discovered = KnowledgePoint("group", "subtask", "new-point", True)
+    decision = AssessorDecision(True, discovered, "new failure mode")
+    first, _, _, _, _ = make_runner(config, run_dir, decision=decision)
+    first.run()
+    resumed, _, _, evaluator, assessor = make_runner(
+        config, run_dir, decision=decision
+    )
+
+    summary = resumed.run()
+
+    assert resumed.examiner.calls == 0
+    assert evaluator.calls == []
+    assert assessor.calls == 0
+    assert summary.scheduled == 4
+
+
+def test_resume_at_cap_returns_without_any_role_call(tmp_path):
+    config = small_config(seeds=1, adaptive=0, cap=1)
+    run_dir = tmp_path / "run"
+    first, _, _, _, _ = make_runner(config, run_dir)
+    first.run()
+    resumed, log, _, evaluator, assessor = make_runner(config, run_dir)
+
+    summary = resumed.run()
+
+    assert log == []
+    assert resumed.examiner.calls == 0
+    assert evaluator.calls == []
+    assert assessor.calls == 0
+    assert summary.scheduled == 1
+
+
 def test_manifest_mismatch_stops_before_any_role_call(tmp_path):
     config = small_config()
     run_dir = tmp_path / "run"
