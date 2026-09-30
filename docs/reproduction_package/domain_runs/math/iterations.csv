@@ -1,0 +1,4 @@
+phase,iteration,total,weak,isr,mean_score
+seed,0,8,0,0.0,10.0
+adaptive,1,4,1,0.25,7.0
+adaptive,2,4,0,0.0,9.0
