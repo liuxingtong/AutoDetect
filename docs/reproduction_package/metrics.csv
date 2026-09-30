@@ -1,0 +1,27 @@
+level,key,total,valid,failed,weak,isr,mean_score
+overall,all,80,80,0,44,0.550000,4.675000
+category,content,15,15,0,9,0.600000,4.066667
+category,format,25,25,0,13,0.520000,5.400000
+category,general constraints,40,40,0,22,0.550000,4.450000
+subtask,content/word constraint,15,15,0,9,0.600000,4.066667
+subtask,format/text format,25,25,0,13,0.520000,5.400000
+subtask,general constraints/emotional tone,20,20,0,12,0.600000,4.450000
+subtask,general constraints/scenario simulation,20,20,0,10,0.500000,4.450000
+point,content/word constraint/excluded words,5,5,0,3,0.600000,3.000000
+point,content/word constraint/specific words,5,5,0,3,0.600000,4.400000
+point,content/word constraint/word constraint,5,5,0,3,0.600000,4.800000
+point,format/text format/Escaping special characters in structured text formats,5,5,0,4,0.800000,3.600000
+point,format/text format/json format,5,5,0,1,0.200000,8.400000
+point,format/text format/list format,5,5,0,0,0.000000,8.400000
+point,format/text format/markdown format,5,5,0,5,1.000000,2.000000
+point,format/text format/table format,5,5,0,3,0.600000,4.600000
+point,general constraints/emotional tone/emotional tone,5,5,0,4,0.800000,3.000000
+point,general constraints/emotional tone/negative tone,5,5,0,4,0.800000,3.600000
+point,general constraints/emotional tone/neutral tone,5,5,0,3,0.600000,4.600000
+point,general constraints/emotional tone/positive tone,5,5,0,1,0.200000,6.600000
+point,general constraints/scenario simulation/descriptive scenario,5,5,0,3,0.600000,4.400000
+point,general constraints/scenario simulation/dialogue scenario,5,5,0,1,0.200000,5.600000
+point,general constraints/scenario simulation/narrative scenario,5,5,0,2,0.400000,4.600000
+point,general constraints/scenario simulation/scenario simulation,5,5,0,4,0.800000,3.200000
+phase,adaptive,48,48,0,31,0.645833,3.958333
+phase,seed,32,32,0,13,0.406250,5.750000

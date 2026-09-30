@@ -1,0 +1,5 @@
+phase,iteration,total,valid,weak,isr,mean_score
+seed,0,32,32,13,0.406250,5.750000
+adaptive,1,16,16,10,0.625000,4.000000
+adaptive,2,16,16,9,0.562500,4.375000
+adaptive,3,16,16,12,0.750000,3.500000

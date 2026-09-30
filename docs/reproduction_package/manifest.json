@@ -1,0 +1,65 @@
+{
+  "config": {
+    "limits": {
+      "max_attempts_per_request": 4,
+      "max_output_tokens": 1024,
+      "max_total_samples": 80,
+      "request_timeout_seconds": 120
+    },
+    "models": {
+      "agent_model": "deepseek-ai/DeepSeek-V4-Flash",
+      "api_key_env": "SILICONFLOW_API_KEY",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "target_model": "Qwen/Qwen2.5-7B-Instruct"
+    },
+    "output_root": "/data/liuxingtong/outputs/autodetect-smallscale",
+    "search": {
+      "adaptive_iterations_per_point": 3,
+      "max_discovered_points_per_subtask": 1,
+      "max_initial_points": 12,
+      "random_seed": 240616714,
+      "seed_questions_per_point": 2
+    },
+    "subtasks": [
+      {
+        "group": "format",
+        "knowledge_points": [
+          "list format",
+          "table format",
+          "json format",
+          "markdown format"
+        ],
+        "name": "text format"
+      },
+      {
+        "group": "content",
+        "knowledge_points": [
+          "specific words",
+          "excluded words"
+        ],
+        "name": "word constraint"
+      },
+      {
+        "group": "general constraints",
+        "knowledge_points": [
+          "narrative scenario",
+          "dialogue scenario",
+          "descriptive scenario"
+        ],
+        "name": "scenario simulation"
+      },
+      {
+        "group": "general constraints",
+        "knowledge_points": [
+          "positive tone",
+          "negative tone",
+          "neutral tone"
+        ],
+        "name": "emotional tone"
+      }
+    ]
+  },
+  "config_fingerprint": "00ff3453fe51afd4d1a4d1e52e102a645d109c6c68e9b9afc899b2a5b02e960b",
+  "created_at": "2026-09-29T02:23:54.601922+00:00",
+  "schema_version": 1
+}
