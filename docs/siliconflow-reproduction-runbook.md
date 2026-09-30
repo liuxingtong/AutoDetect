@@ -49,8 +49,10 @@ cd /data/liuxingtong/src/AutoDetect
   --dry-run
 ```
 
-Confirm that the output names 60 planned initial samples, an 80-sample cap, the
-expected two models, and `network_calls: false`.
+Confirm that the output names 60 planned samples for the 12 initial knowledge
+points, an 80-sample cap that allows four discovered points, the expected two
+models, and `network_calls: false`. A complete run can therefore contain 80
+samples: 60 from initial points plus 20 from discovered points.
 
 ## 5. Run the two-sample live smoke
 
