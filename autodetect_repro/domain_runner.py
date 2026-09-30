@@ -37,8 +37,19 @@ def _call(client: SiliconFlowClient, prompt: str, temperature: float = 0.0):
 
 
 def _json_call(client: SiliconFlowClient, prompt: str) -> Dict[str, Any]:
-    result = _call(client, prompt)
-    return parse_json_object(result.content)
+    last = ""
+    for attempt in range(2):
+        current = prompt if attempt == 0 else (
+            "Return ONLY one valid JSON object. Do not use markdown fences or explanations.\n"
+            "Original request:\n" + prompt + "\nPrevious invalid response:\n" + last[:2000]
+        )
+        result = _call(client, current, temperature=0.0)
+        last = result.content
+        try:
+            return parse_json_object(last)
+        except Exception:
+            continue
+    raise RuntimeError("structured generation failed after one repair")
 
 
 def _domain_context(domain: str) -> str:
@@ -106,6 +117,7 @@ def run(domain: str, config_path: Path, run_dir: Path) -> Dict[str, Any]:
     points = list(DOMAIN_POINTS[domain])
     run_dir.mkdir(parents=True, exist_ok=True)
     rows: List[Dict[str, Any]] = []
+    checkpoint = run_dir / "samples.jsonl"
     for point_index, point in enumerate(points):
         seed_data = _json_call(agent, _seed_prompt(domain, point))
         questions = seed_data.get("questions", [])
@@ -113,15 +125,16 @@ def run(domain: str, config_path: Path, run_dir: Path) -> Dict[str, Any]:
             raise RuntimeError(f"invalid seed response for {point}")
         history: List[Dict[str, Any]] = []
         for ordinal, item in enumerate(questions):
-            history.append(_evaluate(domain, point, "seed", 0, ordinal, item, agent, target))
+            record = _evaluate(domain, point, "seed", 0, ordinal, item, agent, target)
+            history.append(record); rows.append(record)
+            with checkpoint.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
         for iteration in (1, 2):
             item = _json_call(agent, _adaptive_prompt(domain, point, history))
             record = _evaluate(domain, point, "adaptive", iteration, 0, item, agent, target)
-            history.append(record)
-        rows.extend(history)
-    with (run_dir / "samples.jsonl").open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+            history.append(record); rows.append(record)
+            with checkpoint.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
     _write_summary(run_dir, domain, rows)
     return {"domain": domain, "samples": len(rows), "run_dir": str(run_dir)}
 
