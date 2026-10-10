@@ -326,6 +326,11 @@ class ExperimentRunner:
                         },
                     )
                 history_prompts = [item.prompt for item in history]
+                # test_budget bounds how many distinct candidates the controller
+                # wants to see evaluated before making the next decision.
+                test_budget = (
+                    max(1, decision.test_budget) if decision is not None else 1
+                )
                 if self.novelty_filter is not None and candidate_budget > 1:
                     candidates = self.questioner.generate_adaptive_candidates(
                         point, history, iteration, candidate_budget,
@@ -336,7 +341,7 @@ class ExperimentRunner:
                         [c.prompt for c in candidates],
                         history=history_prompts,
                         classify=self.novelty_classify,
-                        budget=1,
+                        budget=test_budget,
                     )
                     self.store.append_event(
                         "candidate_filter",
@@ -361,19 +366,24 @@ class ExperimentRunner:
                         ):
                             return
                         continue
-                    chosen = next(
-                        c for c in candidates
-                        if c.prompt == filter_result.selected[0].candidate
-                    )
-                    question = replace(
-                        chosen,
-                        group=point.group,
-                        subtask=point.subtask,
-                        knowledge_point=point.name,
-                        phase="adaptive",
-                        iteration=iteration,
-                        ordinal=0,
-                    )
+                    # Evaluate up to test_budget distinct candidates, each with
+                    # its own stable ordinal so resume is safe.
+                    for ordinal, selected in enumerate(filter_result.selected):
+                        chosen = next(
+                            c for c in candidates
+                            if c.prompt == selected.candidate
+                        )
+                        question = replace(
+                            chosen,
+                            group=point.group,
+                            subtask=point.subtask,
+                            knowledge_point=point.name,
+                            phase="adaptive",
+                            iteration=iteration,
+                            ordinal=ordinal,
+                        )
+                        if not self._evaluate(point, question):
+                            return
                 else:
                     generated = self.questioner.generate_adaptive(
                         point, history, iteration,
@@ -389,8 +399,8 @@ class ExperimentRunner:
                         iteration=iteration,
                         ordinal=0,
                     )
-                if not self._evaluate(point, question):
-                    return
+                    if not self._evaluate(point, question):
+                        return
             except Exception as exc:
                 if not self._record_generation_failure(
                     point, "adaptive", iteration, 0, exc

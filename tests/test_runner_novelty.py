@@ -218,14 +218,16 @@ def test_runner_uses_novelty_filter_to_pick_top_candidate(tmp_path):
     assert len(classify_calls) == 3
     # The questioner must have produced a candidate batch of size 3.
     assert questioner.candidate_calls == [("point-A", 1, 3)]
-    # The chosen prompt is gamma (most novel w.r.t. seed history).
-    assert summary.scheduled == 2
-    assert summary.valid == 2
+    # test_budget = test_cap = 3; all 3 candidates are DISTINCT,
+    # so all 3 get evaluated (1 seed + 3 adaptive = 4 total).
+    assert summary.scheduled == 4
+    assert summary.valid == 4
     record = CheckpointStore(tmp_path / "run", config).records()
     adaptive_records = [r for r in record if r.phase == "adaptive"]
-    assert len(adaptive_records) == 1
-    assert adaptive_records[0].prompt == "gamma-prompt"
-    assert adaptive_records[0].ordinal == 0  # runner collapses chosen candidate to slot 0
+    assert len(adaptive_records) == 3
+    # Ordered by novelty score: gamma is furthest from seed, then beta, then alpha.
+    assert [r.prompt for r in adaptive_records] == ["gamma-prompt", "beta-prompt", "alpha-prompt"]
+    assert [r.ordinal for r in adaptive_records] == [0, 1, 2]
 
 
 def test_novelty_filter_rejecting_all_candidates_records_failure(tmp_path):
@@ -384,3 +386,78 @@ def test_controller_decision_strategy_flows_to_questioner(tmp_path):
     assert len(decision_events) == 1
     assert decision_events[0]["strategy"] == strategy
     assert decision_events[0]["objective"] == objective
+
+
+def test_test_budget_controls_evaluation_count(tmp_path):
+    """RuleController.decide() returns test_budget; the runner must evaluate
+    that many distinct candidates (up to the filter's budget) before moving on."""
+    config = adaptive_config(candidate_budget=3)
+    # Three candidates; RuleController caps at test_cap=2.
+    candidates = {("point-A", 1): ["alpha", "beta", "gamma"]}
+    filterer = NoveltyFilter(
+        embedding=lambda text: [1.0, 0.0] if text == "alpha"
+                              else [0.0, 1.0] if text == "beta"
+                              else [0.5, 0.5],
+        top_k=2,
+    )
+    point = KnowledgePoint("group", "subtask", "point-A")
+
+    class BudgetAwareEvaluator:
+        def __init__(self):
+            self.calls = []
+
+        def evaluate(self, question):
+            self.calls.append(question.prompt)
+            return SampleRecord(
+                sample_id="",
+                group=question.group,
+                subtask=question.subtask,
+                knowledge_point=question.knowledge_point,
+                phase=question.phase,
+                iteration=question.iteration,
+                ordinal=question.ordinal,
+                prompt=question.prompt,
+                key_point="key",
+                answer="answer",
+                reference_answer="reference",
+                comparison="Rating: [[7]]",
+                score=7.0,
+                is_weakness=False,
+                status="valid",
+                error=None,
+                request_count=1,
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_tokens=15,
+            )
+
+    evaluator = BudgetAwareEvaluator()
+    runner = ExperimentRunner(
+        config,
+        tmp_path / "run",
+        examiner=FakeExaminer([point]),
+        questioner=FakeCandidateQuestioner(candidates),
+        evaluator=evaluator,
+        assessor=FakeAssessor(AssessorDecision(False, None, "stop")),
+        controller=RuleController(
+            candidate_cap=config.search.candidate_questions_per_round,
+            test_cap=config.search.candidate_questions_per_round,
+        ),
+        novelty_filter=filterer,
+    )
+
+    runner.run()
+
+    # RuleController caps test_budget at test_cap=3 (candidate_questions_per_round),
+    # so exactly 3 candidates must have been evaluated.
+    assert len(evaluator.calls) == 4  # 1 seed + 3 adaptive = 4 total
+    adaptive_calls = [c for c in evaluator.calls if c != "seed-prompt-point-A"]
+    assert adaptive_calls == ["alpha", "beta", "gamma"]
+
+    # Verify-phase samples for auto_promote are disabled here.
+    events = CheckpointStore(tmp_path / "run", config).events()
+    filter_events = [e for e in events if e.get("event_type") == "candidate_filter"]
+    assert len(filter_events) == 1
+    # All 3 candidates appeared in the event.
+    candidate_prompts = {c["prompt"] for c in filter_events[0]["candidates"]}
+    assert candidate_prompts == {"alpha", "beta", "gamma"}
