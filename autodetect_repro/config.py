@@ -202,7 +202,7 @@ def _embedding_config(raw_embedding: Any) -> EmbeddingConfig:
         )
 
     return EmbeddingConfig(
-        enabled=True,
+        enabled=bool(raw_embedding.get("enabled", True)),
         type=raw_type,
         base_url=base_url,
         model_path=model_path,
