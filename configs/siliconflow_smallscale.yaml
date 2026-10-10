@@ -5,10 +5,13 @@ models:
   api_key_env: SILICONFLOW_API_KEY
 
 search:
+  mode: adaptive_rule
   seed_questions_per_point: 2
   adaptive_iterations_per_point: 3
   max_initial_points: 12
   max_discovered_points_per_subtask: 1
+  candidate_questions_per_round: 3
+  auto_promote: true
   random_seed: 240616714
 
 limits:

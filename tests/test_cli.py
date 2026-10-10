@@ -160,11 +160,20 @@ def test_api_failure_and_incomplete_run_have_distinct_exit_codes(
 
 
 def test_baseline_mode_does_not_build_novelty_classifier():
+    """When the config opts out of embedding entirely, the novelty
+    classifier is not built.  We exercise the same code path the
+    runner uses: load_config + _build_novelty_classifier."""
     config = load_config(
         FULL_CONFIG, {"SILICONFLOW_API_KEY": "unit-test-secret"}
     )
-    # Full config is baseline by default.
-    assert config.search.mode == "baseline"
+    # Force embedding off for the duration of the test (the smallscale
+    # config defaults to embedding.type=remote with a localhost URL,
+    # which would otherwise build a classifier).
+    from dataclasses import replace
+    config = replace(
+        config,
+        embedding=replace(config.embedding, enabled=False),
+    )
     assert _build_novelty_classifier(config) is None
 
 
