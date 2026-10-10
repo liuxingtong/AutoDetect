@@ -6,6 +6,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .checkpoint import CheckpointError, CheckpointStore, sample_id
 from .config import RunConfig
+from .controller import BranchStats
 from .types import KnowledgePoint, Question, SampleRecord, SubtaskConfig
 
 
@@ -36,6 +37,7 @@ class ExperimentRunner:
         questioner: object,
         evaluator: object,
         assessor: object,
+        controller: Optional[object] = None,
         interrupt_check: Optional[Callable[[], bool]] = None,
     ) -> None:
         self.config = config
@@ -44,6 +46,7 @@ class ExperimentRunner:
         self.questioner = questioner
         self.evaluator = evaluator
         self.assessor = assessor
+        self.controller = controller
         self.interrupt_check = interrupt_check or (lambda: False)
         self.store: Optional[CheckpointStore] = None
         self._records: List[SampleRecord] = []
@@ -202,6 +205,35 @@ class ExperimentRunner:
                 continue
             history = self._point_history(point)
             try:
+                if self.controller is not None:
+                    weak_count = sum(1 for item in history if item.status == "valid" and item.is_weakness)
+                    recent_iterations = [item for item in history if item.phase == "adaptive" and item.iteration >= max(1, iteration - 2)]
+                    recent_weak = sum(1 for item in recent_iterations if item.status == "valid" and item.is_weakness)
+                    stats = BranchStats(
+                        tested=len(history),
+                        failures=weak_count,
+                        novel_failures=recent_weak,
+                        stagnation_rounds=2 if recent_iterations and recent_weak == 0 else 0,
+                    )
+                    decision = self.controller.decide(
+                        knowledge_point=point.name,
+                        branch_id=point.name,
+                        stats=stats,
+                        remaining_budget=max(0, self.config.limits.max_total_samples - len(self._records)),
+                    )
+                    self.store.append_event(
+                        "search_decision",
+                        {
+                            "knowledge_point": decision.knowledge_point,
+                            "branch_id": decision.branch_id,
+                            "strategy": decision.strategy,
+                            "objective": decision.objective,
+                            "reason": decision.reason,
+                            "candidate_budget": decision.candidate_budget,
+                            "test_budget": decision.test_budget,
+                            "iteration": iteration,
+                        },
+                    )
                 generated = self.questioner.generate_adaptive(
                     point, history, iteration
                 )
