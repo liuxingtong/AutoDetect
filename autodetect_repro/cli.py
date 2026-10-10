@@ -10,10 +10,16 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from .checkpoint import CheckpointError
+from .analysis_pipeline import AdaptiveAnalysisPipeline
+from .branches import BranchManager
 from .client import ApiError, SiliconFlowClient
 from .config import ConfigError, RunConfig, load_config
+from .controller import RuleController
 from .reporting import ReportingError, write_report
-from .roles import Assessor, Evaluator, Examiner, Questioner, RoleError
+from .roles import (
+    Assessor, BehavioralClusterer, Evaluator, Examiner, FailureSignatureAnalyzer,
+    LLMController, Questioner, RoleError,
+)
 from .runner import ExperimentRunner, RunSummary
 
 
@@ -70,6 +76,21 @@ def _client(config: RunConfig, model: str) -> SiliconFlowClient:
 def execute_run(config: RunConfig, run_dir: Path) -> RunSummary:
     agent = _client(config, config.models.agent_model)
     target = _client(config, config.models.target_model)
+    controller = None
+    analysis_pipeline = None
+    if config.search.mode == "adaptive_rule":
+        controller = RuleController(
+            candidate_cap=config.search.candidate_questions_per_round,
+            test_cap=config.search.candidate_questions_per_round,
+        )
+    elif config.search.mode == "adaptive_llm":
+        controller = LLMController(config, agent)
+    if config.search.mode != "baseline":
+        analysis_pipeline = AdaptiveAnalysisPipeline(
+            signature_extractor=FailureSignatureAnalyzer(config, agent),
+            behavior_classifier=BehavioralClusterer(config, agent),
+            branch_manager=BranchManager(),
+        )
     runner = ExperimentRunner(
         config,
         run_dir,
@@ -79,6 +100,8 @@ def execute_run(config: RunConfig, run_dir: Path) -> RunSummary:
             target, agent, max_tokens=config.limits.max_output_tokens
         ),
         assessor=Assessor(config, agent),
+        controller=controller,
+        analysis_pipeline=analysis_pipeline,
     )
     summary = runner.run()
     write_report(run_dir)

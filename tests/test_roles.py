@@ -4,7 +4,10 @@ import pytest
 
 from autodetect_repro.client import ChatResult, TokenUsage
 from autodetect_repro.config import load_config
-from autodetect_repro.roles import Assessor, Evaluator, Examiner, Questioner, RoleError
+from autodetect_repro.roles import (
+    Assessor, BehavioralClusterer, Evaluator, Examiner, FailureSignatureAnalyzer,
+    LLMController, PromotionJudge, Questioner, RoleError,
+)
 from autodetect_repro.types import KnowledgePoint, Question, SampleRecord
 
 
@@ -227,3 +230,22 @@ def test_assessor_accepts_only_one_distinct_non_empty_point(
         assert decision.point.discovered is True
     else:
         assert decision.point is None
+
+
+def test_llm_adaptive_roles_parse_structured_decisions(config):
+    controller_client = FakeClient("agent", ['{"strategy":"verify","objective":"position effect","reason":"new failure","candidate_budget":5,"test_budget":2}'])
+    decision = LLMController(config, controller_client).decide(
+        knowledge_point="list format", branch_id="b1", stats={}, remaining_budget=3
+    )
+    assert decision.strategy == "verify"
+    assert decision.test_budget == 2
+
+    signature_client = FakeClient("agent", ['{"is_failure":true,"violation":"digit","observed_behavior":"contains 2026","trigger_context":"negative constraint","evidence":"2026"}'])
+    signature = FailureSignatureAnalyzer(config, signature_client)(record(2.0, "no digits"))
+    assert signature.violation == "digit"
+
+    cluster_client = FakeClient("agent", ['{"label":"Different","reason":"new trigger"}'])
+    assert BehavioralClusterer(config, cluster_client)(signature, []) .value == "different"
+
+    promotion_client = FakeClient("agent", ['{"decision":"promote","reason":"verified"}'])
+    assert PromotionJudge(config, promotion_client).judge({}, []) == "promote"

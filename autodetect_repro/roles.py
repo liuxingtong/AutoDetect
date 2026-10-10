@@ -3,16 +3,22 @@
 from typing import Any, Callable, Dict, Iterable, Sequence, Tuple
 
 from .client import ChatResult, SiliconFlowClient
+from .behavior import BehaviorLabel, FailureSignature
+from .controller import SearchDecision
 from .config import RunConfig
 from .parsing import ParseError, parse_json_object, parse_score
 from .prompts import (
     adaptive_prompt,
+    behavioral_clustering_prompt,
+    controller_prompt,
     assessor_prompt,
     examiner_prompt,
+    failure_signature_prompt,
     judge_prompt,
     reference_prompt,
     repair_prompt,
     seed_prompt,
+    promotion_prompt,
 )
 from .types import (
     AssessorDecision,
@@ -25,6 +31,66 @@ from .types import (
 
 class RoleError(RuntimeError):
     """Raised when a role cannot produce a valid contracted response."""
+
+
+class LLMController:
+    def __init__(self, config: RunConfig, client: SiliconFlowClient) -> None:
+        self.config = config
+        self.client = client
+
+    def decide(self, *, knowledge_point, branch_id, stats, remaining_budget):
+        def validate(payload):
+            strategy = str(payload["strategy"]).lower()
+            if strategy not in {"exploit", "explore", "verify", "restart"}:
+                raise ValueError("invalid strategy")
+            candidate_budget = min(int(payload["candidate_budget"]), remaining_budget)
+            test_budget = min(int(payload["test_budget"]), remaining_budget)
+            if candidate_budget < 0 or test_budget < 0:
+                raise ValueError("invalid budget")
+            return SearchDecision(knowledge_point, branch_id, strategy, str(payload["objective"]), str(payload["reason"]), candidate_budget, test_budget)
+        return _structured_call(self.client, controller_prompt([knowledge_point], stats, {}, remaining_budget), max_tokens=self.config.limits.max_output_tokens, temperature=0.0, validate=validate)
+
+
+class FailureSignatureAnalyzer:
+    def __init__(self, config: RunConfig, client: SiliconFlowClient) -> None:
+        self.config = config
+        self.client = client
+
+    def __call__(self, record: SampleRecord) -> FailureSignature:
+        def validate(payload):
+            if payload.get("is_failure") is not True:
+                raise ValueError("not a confirmed failure")
+            values = [str(payload.get(key, "")).strip() for key in ("violation", "observed_behavior", "trigger_context", "evidence")]
+            if not all(values):
+                raise ValueError("incomplete signature")
+            return FailureSignature(*values)
+        prompt = failure_signature_prompt(record.prompt, record.answer, record.reference_answer, record.comparison)
+        return _structured_call(self.client, prompt, max_tokens=self.config.limits.max_output_tokens, temperature=0.0, validate=validate)
+
+
+class BehavioralClusterer:
+    def __init__(self, config: RunConfig, client: SiliconFlowClient) -> None:
+        self.config = config
+        self.client = client
+
+    def __call__(self, signature, representatives):
+        def validate(payload):
+            return BehaviorLabel(str(payload["label"]).lower())
+        return _structured_call(self.client, behavioral_clustering_prompt(signature.to_dict(), [item.to_dict() for item in representatives]), max_tokens=self.config.limits.max_output_tokens, temperature=0.0, validate=validate)
+
+
+class PromotionJudge:
+    def __init__(self, config: RunConfig, client: SiliconFlowClient) -> None:
+        self.config = config
+        self.client = client
+
+    def judge(self, branch, evidence):
+        def validate(payload):
+            decision = str(payload["decision"]).lower()
+            if decision not in {"promote", "continue_verification", "reject"}:
+                raise ValueError("invalid promotion decision")
+            return decision
+        return _structured_call(self.client, promotion_prompt(branch, evidence), max_tokens=self.config.limits.max_output_tokens, temperature=0.0, validate=validate)
 
 
 def _normalized(text: str) -> str:
