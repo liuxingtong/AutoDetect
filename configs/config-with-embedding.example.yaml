@@ -1,0 +1,68 @@
+# AutoDetect Reproduction Configuration with Embedding Service
+#
+# This configuration enables semantic novelty filtering using the Qwen3-Embedding-0.6B
+# model deployed on the remote server.
+#
+# Usage:
+#   python -m autodetect_repro.cli run --config config-with-embedding.yaml
+
+models:
+  base_url: https://api.siliconflow.cn/v1
+  agent_model: deepseek-ai/DeepSeek-V4-Flash
+  target_model: Qwen/Qwen2.5-7B-Instruct
+  api_key_env: SILICONFLOW_API_KEY
+
+search:
+  mode: adaptive_rule              # Enable adaptive controller
+  seed_questions_per_point: 3
+  adaptive_iterations_per_point: 5
+  max_initial_points: 5
+  max_discovered_points_per_subtask: 3
+  random_seed: 240616714
+  
+  # Novelty filtering configuration
+  candidate_questions_per_round: 3  # Number of candidates per iteration
+  novelty_top_k: 3                 # Number of neighbors for similarity check
+  random_exploration_ratio: 0.1    # Keep some random candidates
+  auto_promote: false              # Don't auto-promote new taxonomy points
+
+limits:
+  max_total_samples: 80
+  max_attempts_per_request: 3
+  request_timeout_seconds: 60
+  max_output_tokens: 2048
+
+# Embedding service configuration for semantic novelty filtering
+# The service should be running on the remote server at:
+#   http://115.182.62.246:8080
+# Start with:
+#   ssh liuxingtong@115.182.62.246
+#   cd /data/liuxingtong && nohup /data/liuxingtong/envs/llm/bin/python -m autodetect_embedding.embedding_server &
+embedding:
+  type: remote                    # remote, local, or huggingface
+  base_url: http://115.182.62.246:8080
+  # api_key_env: EMBEDDING_API_KEY  # Uncomment if authentication is required
+  batch_size: 32
+  max_length: 512
+  normalize: true
+
+# Alternative: Local embedding model (if running on the remote server)
+# embedding:
+#   type: local
+#   model_path: /data/liuxingtong/models/Qwen3-Embedding-0.6B
+#   device: cuda
+#   batch_size: 32
+#   max_length: 512
+#   normalize: true
+
+subtasks:
+  - group: code
+    name: code-generation
+    knowledge_points:
+      - "Edge case handling"
+      - "Error message generation"
+      - "Code readability"
+      - "Algorithm efficiency"
+      - "Memory management"
+
+output_root: /data/liuxingtong/outputs/autodetect-embedding-test
