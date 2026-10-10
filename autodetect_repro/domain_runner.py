@@ -18,12 +18,24 @@ DOMAIN_POINTS = {
         "algebra / equations_and_inequalities / quadratic_equations",
         "geometry / trigonometry / trigonometric_identities",
         "analysis / derivatives / chain_rule",
+        "algebra / polynomials / factorization_and_roots",
+        "algebra / functions / composition_and_inverses",
+        "geometry / coords_and_shapes / analytic_geometry",
+        "analysis / integrals / substitution",
+        "number_theory / modular_arithmetic / congruences",
+        "probability / conditional_probability / bayes_rule",
     ),
     "code": (
         "string_processing / regular_expressions",
         "data_container_operations / filtering_and_selection",
         "logic_and_control_flow / exception_handling",
         "mathematics_and_algorithms / algorithm_design",
+        "string_processing / parsing / tokenization",
+        "data_structures / graphs / traversal",
+        "data_structures / heaps / priority_queues",
+        "file_handling / csv / robust_io",
+        "functions_and_modules / decorators / state",
+        "mathematics_and_algorithms / dynamic_programming / memoization",
     ),
 }
 
@@ -144,8 +156,20 @@ def _evaluate(domain, point, phase, iteration, ordinal, item, agent, target):
     key_point = str(item.get("key_point", point)).strip()
     target_result = _call(target, prompt, temperature=0.0)
     reference_result = _call(agent, _reference_prompt(domain, prompt), temperature=0.0)
-    judge_result = _call(agent, _judge_prompt(domain, prompt, target_result.content, reference_result.content), temperature=0.0)
-    score = parse_score(judge_result.content)
+    judge_prompt = _judge_prompt(domain, prompt, target_result.content, reference_result.content)
+    judge_result = _call(agent, judge_prompt, temperature=0.0)
+    try:
+        score = parse_score(judge_result.content)
+    except Exception:
+        # DeepSeek occasionally omits the bracketed score. Spend one bounded
+        # repair call rather than aborting an otherwise valid long run.
+        repair = _call(
+            agent,
+            judge_prompt + "\nReturn only the final line in exactly this form: Rating: [[7]].",
+            temperature=0.0,
+        )
+        judge_result = repair
+        score = parse_score(judge_result.content)
     usage = [target_result, reference_result, judge_result]
     return {
         "domain": domain, "point": point, "key_point": key_point,
