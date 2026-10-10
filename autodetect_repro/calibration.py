@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, Optional, Protocol
 
 from .client import SiliconFlowClient
 from .prompts import behavioral_clustering_prompt
+from .roles import _structured_call
 from .types import LimitsConfig
 
 
@@ -147,57 +148,6 @@ def _validate_behavior(payload: Dict[str, Any]) -> JudgeVerdict:
     reason = str(payload.get("reason", "")).strip()
     return JudgeVerdict(decision=decision, confidence=confidence,
                         reason=reason, raw=dict(payload))
-
-
-# ---------------------------------------------------------------------------
-# Structured-call bridge (mirrors roles._structured_call without the
-# circular import).
-# ---------------------------------------------------------------------------
-
-
-def _structured_call(
-    client: SiliconFlowClient,
-    prompt: str,
-    *,
-    max_tokens: int,
-    temperature: float,
-    validate: Callable[[Dict[str, Any]], Any],
-) -> Any:
-    import json
-    import re
-    from .client import ApiError, ParseError
-
-    def _parse(content: str) -> Dict[str, Any]:
-        text = content.strip()
-        if text.startswith("```"):
-            text = re.sub(r"^```(?:json)?", "", text).strip("`").strip()
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", text, re.DOTALL)
-            if not match:
-                raise ParseError("no JSON object in judge response")
-            return json.loads(match.group(0))
-
-    latest = ""
-    for attempt in range(2):
-        current_prompt = (
-            prompt if attempt == 0
-            else prompt + "\n\nThe previous response was invalid. Return ONLY valid JSON."
-        )
-        result = client.complete(
-            [{"role": "user", "content": current_prompt}],
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        try:
-            payload = _parse(result.content)
-            return validate(payload)
-        except (ParseError, ValueError, TypeError, KeyError) as exc:
-            latest = result.content
-            if attempt == 1:
-                raise RuntimeError("judge failed to return valid JSON: {}".format(exc))
-    raise RuntimeError("unreachable: judge retry loop exited without returning")  # pragma
 
 
 # ---------------------------------------------------------------------------
