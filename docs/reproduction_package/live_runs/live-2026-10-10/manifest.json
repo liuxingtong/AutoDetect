@@ -1,0 +1,49 @@
+{
+  "config": {
+    "limits": {
+      "max_attempts_per_request": 2,
+      "max_output_tokens": 512,
+      "max_total_samples": 12,
+      "request_timeout_seconds": 60
+    },
+    "models": {
+      "agent_model": "deepseek-ai/DeepSeek-V4-Flash",
+      "api_key_env": "SILICONFLOW_API_KEY",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "target_model": "Qwen/Qwen2.5-7B-Instruct"
+    },
+    "output_root": "/tmp/autodetect-live/runs",
+    "search": {
+      "adaptive_iterations_per_point": 3,
+      "auto_promote": true,
+      "candidate_questions_per_round": 2,
+      "max_discovered_points_per_subtask": 1,
+      "max_initial_points": 3,
+      "mode": "adaptive_rule",
+      "novelty_top_k": 3,
+      "random_exploration_ratio": 0.1,
+      "random_seed": 240616714,
+      "seed_questions_per_point": 1
+    },
+    "subtasks": [
+      {
+        "group": "content",
+        "knowledge_points": [
+          "specific words",
+          "excluded words"
+        ],
+        "name": "word constraint"
+      },
+      {
+        "group": "general constraints",
+        "knowledge_points": [
+          "dialogue scenario"
+        ],
+        "name": "scenario simulation"
+      }
+    ]
+  },
+  "config_fingerprint": "2ba65e32bbea5cace07392c0a33fcb3c5d9a6226d663856e56b0c8dd1596c317",
+  "created_at": "2026-10-10T12:02:29.028325+00:00",
+  "schema_version": 1
+}

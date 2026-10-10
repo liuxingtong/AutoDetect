@@ -1,0 +1,10 @@
+level,key,total,valid,failed,weak,isr,mean_score
+overall,all,12,12,0,5,0.416667,5.333333
+category,content,12,12,0,5,0.416667,5.333333
+subtask,content/word constraint,12,12,0,5,0.416667,5.333333
+point,content/word constraint/excluded words,5,5,0,2,0.400000,5.200000
+point,content/word constraint/specific words,4,4,0,0,0.000000,8.500000
+point,content/word constraint/word constraint,3,3,0,3,1.000000,1.333333
+phase,adaptive,7,7,0,2,0.285714,6.000000
+phase,seed,3,3,0,1,0.333333,6.333333
+phase,verify,2,2,0,2,1.000000,1.500000
