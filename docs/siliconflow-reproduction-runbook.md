@@ -121,3 +121,69 @@ wc -l "$REPRO_RUN_DIR/samples.jsonl"
 No GPU process should belong to this reproduction. Update
 `docs/reproduction-pitfalls.md` with any observed deviation before interpreting
 the final trend.
+
+## 10. Optional: enable adaptive search with a local embedding service
+
+The default config uses `search.mode=baseline` and the embedding service is
+disabled.  To exercise the adaptive path (controller + novelty filter +
+LLM novelty classifier + branch/promotion flow) follow these steps.
+
+### 10.1 Start the embedding service
+
+```bash
+/data/liuxingtong/envs/autodetect-repro/bin/pip install fastapi uvicorn numpy 'sentence-transformers>=2.2.0'
+bash scripts/start_embedding_server.sh \
+    --port 8080 \
+    --model sentence-transformers/paraphrase-MiniLM-L6-v2
+```
+
+The server is health-checked at `http://localhost:8080/health`; a 200 OK means
+it is ready.  If the model weights are not in `HF_HOME`, the server will
+download them on first start.
+
+### 10.2 Use the adaptive example config
+
+```bash
+REPRO_ADAPTIVE_RUN_DIR="$REPRO_RUN_DIR/adaptive"
+/data/liuxingtong/envs/autodetect-repro/bin/python -m autodetect_repro run \
+    --live \
+    --config configs/config-with-embedding.example.yaml \
+    --run-dir "$REPRO_ADAPTIVE_RUN_DIR"
+```
+
+The adaptive config sets `search.mode=adaptive_rule`, wires the local
+embedding server as the novelty provider, and turns on `auto_promote=true`
+so the branch verification + promotion flow runs end-to-end.
+
+### 10.3 Resume after interruption
+
+```bash
+/data/liuxingtong/envs/autodetect-repro/bin/python -m autodetect_repro resume \
+    --run-dir "$REPRO_ADAPTIVE_RUN_DIR"
+```
+
+The runner replays `events.jsonl` to restore the behavioral analyzer,
+branch state, and target-call counter so the resumed run issues the
+same search decisions as an uninterrupted run.  The new `## Branch &
+Promotion` and `## Behavioral Diversity` sections in `report.md`
+reflect the final branch status, promotion proposals, and unique-gain
+metrics from the persisted events.
+
+## 11. Recovery: detect and recover from a corrupted resume
+
+The checkpoint store tolerates the final truncated line of `samples.jsonl`
+but cannot recover mid-file corruption.  If `autodetect_repro resume` reports
+a `CheckpointError` about line N, run:
+
+```bash
+# Inspect the samples that were kept.
+wc -l "$REPRO_RUN_DIR/samples.jsonl" "$REPRO_RUN_DIR/quarantine.jsonl"
+# Move the quarantined bytes aside and retry the resume.
+mv "$REPRO_RUN_DIR/quarantine.jsonl" "$REPRO_RUN_DIR/quarantine.jsonl.recovered"
+/data/liuxingtong/envs/autodetect-repro/bin/python -m autodetect_repro resume \
+    --run-dir "$REPRO_RUN_DIR"
+```
+
+If a manifest fingerprint mismatch appears (e.g. config was edited mid-run),
+the resume is refused to prevent silent state corruption.  Fix the config
+back to the original or move the run to a fresh `--run-dir` and start over.
