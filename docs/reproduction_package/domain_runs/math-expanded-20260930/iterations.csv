@@ -1,4 +1,0 @@
-phase,iteration,total,weak,isr,mean_score
-seed,0,20,0,0.0,10.0
-adaptive,1,10,0,0.0,9.1
-adaptive,2,10,3,0.3,6.8
