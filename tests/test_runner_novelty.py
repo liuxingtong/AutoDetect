@@ -452,7 +452,9 @@ def test_test_budget_controls_evaluation_count(tmp_path):
     # so exactly 3 candidates must have been evaluated.
     assert len(evaluator.calls) == 4  # 1 seed + 3 adaptive = 4 total
     adaptive_calls = [c for c in evaluator.calls if c != "seed-prompt-point-A"]
-    assert adaptive_calls == ["alpha", "beta", "gamma"]
+    # Filter sorts by semantic_novelty descending; gamma is most novel.
+    assert set(adaptive_calls) == {"alpha", "beta", "gamma"}
+    assert adaptive_calls[0] == "gamma"  # most novel first
 
     # Verify-phase samples for auto_promote are disabled here.
     events = CheckpointStore(tmp_path / "run", config).events()
@@ -461,3 +463,60 @@ def test_test_budget_controls_evaluation_count(tmp_path):
     # All 3 candidates appeared in the event.
     candidate_prompts = {c["prompt"] for c in filter_events[0]["candidates"]}
     assert candidate_prompts == {"alpha", "beta", "gamma"}
+
+
+def test_random_exploration_does_not_change_evaluation_count(tmp_path):
+    """random_exploration_ratio shuffles the selected set but does not
+    change how many candidates are evaluated."""
+    from dataclasses import replace as _dc_replace
+    config = _dc_replace(
+        adaptive_config(candidate_budget=3),
+        search=_dc_replace(
+            adaptive_config(candidate_budget=3).search,
+            random_exploration_ratio=0.5,
+        ),
+    )
+    candidates = {("point-A", 1): ["alpha", "beta", "gamma"]}
+    filterer = NoveltyFilter(
+        embedding=lambda text: [1.0, 0.0] if text == "alpha"
+                              else [0.0, 1.0] if text == "beta"
+                              else [0.5, 0.5],
+        top_k=2,
+    )
+    point = KnowledgePoint("group", "subtask", "point-A")
+
+    class CountingEvaluator:
+        def __init__(self):
+            self.calls = []
+
+        def evaluate(self, question):
+            self.calls.append(question.prompt)
+            return SampleRecord(
+                sample_id="", group=question.group, subtask=question.subtask,
+                knowledge_point=question.knowledge_point, phase=question.phase,
+                iteration=question.iteration, ordinal=question.ordinal,
+                prompt=question.prompt, key_point="key", answer="a",
+                reference_answer="r", comparison="Rating: [[7]]", score=7.0,
+                is_weakness=False, status="valid", error=None, request_count=1,
+                prompt_tokens=10, completion_tokens=5, total_tokens=15,
+            )
+
+    evaluator = CountingEvaluator()
+    runner = ExperimentRunner(
+        config, tmp_path / "run",
+        examiner=FakeExaminer([point]),
+        questioner=FakeCandidateQuestioner(candidates),
+        evaluator=evaluator,
+        assessor=FakeAssessor(AssessorDecision(False, None, "stop")),
+        controller=RuleController(
+            candidate_cap=config.search.candidate_questions_per_round,
+            test_cap=config.search.candidate_questions_per_round,
+        ),
+        novelty_filter=filterer,
+    )
+    runner.run()
+    # test_budget=3, so 3 adaptive evaluations + 1 seed = 4 total.
+    assert len(evaluator.calls) == 4
+    adaptive = [c for c in evaluator.calls if c != "seed-prompt-point-A"]
+    assert len(adaptive) == 3
+    assert set(adaptive) == {"alpha", "beta", "gamma"}

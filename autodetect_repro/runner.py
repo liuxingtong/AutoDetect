@@ -1,5 +1,7 @@
 """Capped, resumable AutoDetect experiment scheduling."""
 
+import random as _random
+
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
@@ -366,9 +368,46 @@ class ExperimentRunner:
                         ):
                             return
                         continue
+                    # Random exploration: when the controller's strategy is "explore"
+                    # and the exploration ratio is non-zero, randomly replace up to
+                    # ratio% of the selected candidates with unselected-but-passing
+                    # candidates.  This prevents the search from over-exploiting the
+                    # novelty-ranked ordering.
+                    selected_list = list(filter_result.selected)
+                    if (
+                        decision is not None
+                        and decision.strategy == "explore"
+                        and self.config.search.random_exploration_ratio > 0.0
+                    ):
+                        _random.seed(
+                            self.config.search.random_seed + iteration
+                        )
+                        n_replace = min(
+                            len(selected_list),
+                            max(
+                                1,
+                                int(
+                                    len(selected_list)
+                                    * self.config.search.random_exploration_ratio
+                                ),
+                            ),
+                        )
+                        # Pull candidates from rejected pool that were DISTINCT.
+                        rejected_distinct = [
+                            c for c in filter_result.rejected
+                            if c.label.value == "distinct"
+                        ]
+                        replacements = _random.sample(
+                            rejected_distinct, min(n_replace, len(rejected_distinct))
+                        )
+                        # Shuffle the selected list and replace the first n_replace.
+                        _random.shuffle(selected_list)
+                        for i, repl in enumerate(replacements[:n_replace]):
+                            selected_list[i] = repl
+                        _random.seed()  # restore global state
                     # Evaluate up to test_budget distinct candidates, each with
                     # its own stable ordinal so resume is safe.
-                    for ordinal, selected in enumerate(filter_result.selected):
+                    for ordinal, selected in enumerate(selected_list):
                         chosen = next(
                             c for c in candidates
                             if c.prompt == selected.candidate
