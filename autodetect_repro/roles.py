@@ -1,20 +1,23 @@
 """AutoDetect Examiner, Questioner, Evaluator, and Assessor roles."""
 
-from typing import Any, Callable, Dict, Iterable, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Tuple
 
 from .client import ChatResult, SiliconFlowClient
 from .behavior import BehaviorLabel, FailureSignature
 from .controller import SearchDecision
 from .config import RunConfig
+from .novelty import NoveltyLabel
 from .parsing import ParseError, parse_json_object, parse_score
 from .prompts import (
     adaptive_prompt,
+    adaptive_candidates_prompt,
     behavioral_clustering_prompt,
     controller_prompt,
     assessor_prompt,
     examiner_prompt,
     failure_signature_prompt,
     judge_prompt,
+    novelty_classify_prompt,
     reference_prompt,
     repair_prompt,
     seed_prompt,
@@ -91,6 +94,48 @@ class PromotionJudge:
                 raise ValueError("invalid promotion decision")
             return decision
         return _structured_call(self.client, promotion_prompt(branch, evidence), max_tokens=self.config.limits.max_output_tokens, temperature=0.0, validate=validate)
+
+
+class LLMNoveltyClassifier:
+    """Callable LLM-backed novelty classifier for the :class:`NoveltyFilter`.
+
+    Returns a :class:`NoveltyLabel` for one candidate.  Failures fall back to
+    ``UNCERTAIN`` so that the filter keeps the candidate rather than silently
+    accepting or rejecting it on an erroneous LLM call.
+    """
+
+    def __init__(
+        self,
+        client: SiliconFlowClient,
+        *,
+        max_tokens: int,
+        knowledge_point: str = "",
+    ) -> None:
+        self.client = client
+        self.max_tokens = max_tokens
+        self.knowledge_point = knowledge_point
+
+    def __call__(
+        self, candidate: str, neighbors: Sequence[str]
+    ) -> NoveltyLabel:
+        def validate(payload: Dict[str, Any]) -> NoveltyLabel:
+            label = str(payload["label"]).strip().lower()
+            if label not in {"duplicate", "related", "distinct", "uncertain"}:
+                raise ValueError("invalid novelty label")
+            return NoveltyLabel(label)
+
+        try:
+            return _structured_call(
+                self.client,
+                novelty_classify_prompt(
+                    candidate, neighbors, self.knowledge_point
+                ),
+                max_tokens=self.max_tokens,
+                temperature=0.0,
+                validate=validate,
+            )
+        except RoleError:
+            return NoveltyLabel.UNCERTAIN
 
 
 def _normalized(text: str) -> str:
@@ -207,6 +252,9 @@ class Questioner:
         point: KnowledgePoint,
         history: Sequence[SampleRecord],
         iteration: int,
+        *,
+        strategy: Optional[str] = None,
+        objective: Optional[str] = None,
     ) -> Question:
         previous = {_normalized(item.prompt) for item in history}
 
@@ -228,11 +276,76 @@ class Questioner:
 
         return _structured_call(
             self.client,
-            adaptive_prompt(point, history, iteration),
+            adaptive_prompt(point, history, iteration, strategy=strategy, objective=objective),
             max_tokens=self.config.limits.max_output_tokens,
             temperature=0.7,
             validate=validate,
         )
+
+    def generate_adaptive_candidates(
+        self,
+        point: KnowledgePoint,
+        history: Sequence[SampleRecord],
+        iteration: int,
+        count: int,
+        *,
+        strategy: Optional[str] = None,
+        objective: Optional[str] = None,
+    ) -> Tuple[Question, ...]:
+        """Generate ``count`` distinct adaptive questions for the same objective.
+
+        The returned tuple is consumed by :class:`NoveltyFilter` in the runner.
+        ``count`` is bounded by the controller's ``candidate_budget`` and is
+        always at least 1 in the live runner path.
+        """
+        if count <= 0:
+            raise ValueError("candidate count must be positive")
+        previous = {_normalized(item.prompt) for item in history}
+
+        def validate(payload: Dict[str, Any]) -> Tuple[Question, ...]:
+            raw_questions = payload.get("questions")
+            if not isinstance(raw_questions, list) or len(raw_questions) != count:
+                raise ValueError("wrong candidate count")
+            questions = []
+            seen = set(previous)
+            for ordinal, raw in enumerate(raw_questions):
+                if not isinstance(raw, dict):
+                    raise ValueError("candidate must be an object")
+                key_point = str(raw.get("key_point", "")).strip()
+                prompt_text = str(raw.get("prompt", "")).strip()
+                normalized = _normalized(prompt_text)
+                if not key_point or not normalized or normalized in seen:
+                    raise ValueError("candidate prompt must be new and non-empty")
+                seen.add(normalized)
+                questions.append(
+                    Question(
+                        point.group,
+                        point.subtask,
+                        point.name,
+                        key_point,
+                        prompt_text,
+                        "adaptive",
+                        iteration,
+                        ordinal,
+                    )
+                )
+            return tuple(questions)
+
+        try:
+            return _structured_call(
+                self.client,
+                adaptive_candidates_prompt(
+                    point, history, iteration, count,
+                    strategy=strategy, objective=objective,
+                ),
+                max_tokens=self.config.limits.max_output_tokens,
+                temperature=0.7,
+                validate=validate,
+            )
+        except RoleError as exc:
+            raise RoleError(
+                "could not produce distinct adaptive candidates"
+            ) from exc
 
 
 class Evaluator:

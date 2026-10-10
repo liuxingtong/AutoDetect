@@ -1,7 +1,7 @@
 """Prompt contracts adapted from the released AutoDetect implementation."""
 
 import json
-from typing import Sequence
+from typing import Optional, Sequence
 
 from .types import KnowledgePoint, Question, SampleRecord, SubtaskConfig
 
@@ -76,6 +76,9 @@ def adaptive_prompt(
     point: KnowledgePoint,
     history: Sequence[SampleRecord],
     iteration: int,
+    *,
+    strategy: Optional[str] = None,
+    objective: Optional[str] = None,
 ) -> str:
     compact = [
         {
@@ -92,14 +95,65 @@ def adaptive_prompt(
         )[:5]
     ]
     context = {"iteration": iteration, "history": compact}
+    strategy_clause = (
+        "\nAdopt the search strategy {strategy!r}: {objective!r}."
+    ).format(strategy=strategy, objective=objective) if strategy else ""
     return (
         "Act as the AutoDetect Questioner. Generate one new, solvable and distinct "
         "test for {point!r}. Use lower-scoring history to expose a deeper weakness "
         "without copying a previous prompt. Return only JSON with key_point and "
-        "prompt.\nSearch context:\n{context}"
+        "prompt.\nSearch context:\n{context}{strategy_clause}"
     ).format(
         point=point.name,
         context=json.dumps(context, ensure_ascii=False, sort_keys=True),
+        strategy_clause=strategy_clause,
+    )
+
+
+def adaptive_candidates_prompt(
+    point: KnowledgePoint,
+    history: Sequence[SampleRecord],
+    iteration: int,
+    count: int,
+    *,
+    strategy: Optional[str] = None,
+    objective: Optional[str] = None,
+) -> str:
+    """Generate ``count`` distinct adaptive candidates for one objective.
+
+    Used by the adaptive controller's ``candidate_budget``.  Each candidate
+    must be self-contained and materially different from the others.
+    """
+    compact = [
+        {
+            "prompt": item.prompt,
+            "key_point": item.key_point,
+            "score": item.score,
+        }
+        for item in sorted(
+            history,
+            key=lambda item: (
+                item.score is None,
+                item.score if item.score is not None else 11.0,
+            ),
+        )[:5]
+    ]
+    context = {"iteration": iteration, "history": compact}
+    strategy_clause = (
+        "\nAdopt the search strategy {strategy!r}: {objective!r}."
+    ).format(strategy=strategy, objective=objective) if strategy else ""
+    return (
+        "Act as the AutoDetect Questioner. Generate exactly {count} new, solvable "
+        "and mutually distinct tests for the knowledge point {point!r}. Each "
+        "candidate must change a meaningful variable (entity, scenario, or "
+        "constraint) and must not copy any prior prompt. Return only JSON as "
+        "{{\"questions\": [{{\"key_point\": \"...\", \"prompt\": \"...\"}}]}} "
+        "with exactly {count} entries.\nSearch context:\n{context}{strategy_clause}"
+    ).format(
+        count=count,
+        point=point.name,
+        context=json.dumps(context, ensure_ascii=False, sort_keys=True),
+        strategy_clause=strategy_clause,
     )
 
 
@@ -155,3 +209,27 @@ def repair_prompt(original_instruction: str, response: str) -> str:
         "instruction. Preserve its intended content and add no prose.\n\nOriginal "
         "instruction:\n{instruction}\n\nResponse to repair:\n{response}"
     ).format(instruction=original_instruction[:4000], response=response[:4000])
+
+
+def novelty_classify_prompt(
+    candidate: str,
+    neighbors: Sequence[str],
+    knowledge_point: str = "",
+) -> str:
+    """Prompt the LLM to label a candidate question's novelty.
+
+    Returns JSON with ``label: Duplicate | Related | Distinct | Uncertain``
+    and a brief ``reason``.  Different requires a distinct observed behavior
+    or a materially different trigger condition; do not infer hidden causes.
+    """
+    return (
+        "Act as the AutoDetect Novelty Classifier for knowledge point {kp!r}. "
+        "Compare the candidate question with the existing neighbors. Return "
+        "only JSON as {{\"label\": \"Duplicate\"|\"Related\"|\"Distinct\"|"
+        "\"Uncertain\", \"reason\": \"...\"}}.\n"
+        "candidate={candidate}\nneighbors={neighbors}"
+    ).format(
+        kp=knowledge_point,
+        candidate=candidate,
+        neighbors=list(neighbors),
+    )

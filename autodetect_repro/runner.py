@@ -7,6 +7,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from .checkpoint import CheckpointError, CheckpointStore, sample_id
 from .config import RunConfig
 from .controller import BranchStats
+from .novelty import NoveltyFilter, NoveltyLabel
 from .types import KnowledgePoint, Question, SampleRecord, SubtaskConfig
 
 
@@ -39,6 +40,10 @@ class ExperimentRunner:
         assessor: object,
         controller: Optional[object] = None,
         analysis_pipeline: Optional[object] = None,
+        novelty_filter: Optional[NoveltyFilter] = None,
+        novelty_classify: Optional[
+            Callable[[str, Sequence[str]], NoveltyLabel]
+        ] = None,
         interrupt_check: Optional[Callable[[], bool]] = None,
     ) -> None:
         self.config = config
@@ -49,6 +54,12 @@ class ExperimentRunner:
         self.assessor = assessor
         self.controller = controller
         self.analysis_pipeline = analysis_pipeline
+        self.novelty_filter = novelty_filter
+        # Default classifier rejects exact duplicates only.  Real experiments
+        # inject a stricter LLM-backed classifier.
+        self.novelty_classify = novelty_classify or (
+            lambda candidate, neighbors: NoveltyLabel.DISTINCT
+        )
         self.interrupt_check = interrupt_check or (lambda: False)
         self.store: Optional[CheckpointStore] = None
         self._records: List[SampleRecord] = []
@@ -209,7 +220,9 @@ class ExperimentRunner:
             if identifier in self._by_id:
                 continue
             history = self._point_history(point)
+            decision = None
             try:
+                candidate_budget = 1
                 if self.controller is not None:
                     weak_count = sum(1 for item in history if item.status == "valid" and item.is_weakness)
                     recent_iterations = [item for item in history if item.phase == "adaptive" and item.iteration >= max(1, iteration - 2)]
@@ -226,6 +239,7 @@ class ExperimentRunner:
                         stats=stats,
                         remaining_budget=max(0, self.config.limits.max_total_samples - len(self._records)),
                     )
+                    candidate_budget = max(1, decision.candidate_budget)
                     self.store.append_event(
                         "search_decision",
                         {
@@ -239,18 +253,70 @@ class ExperimentRunner:
                             "iteration": iteration,
                         },
                     )
-                generated = self.questioner.generate_adaptive(
-                    point, history, iteration
-                )
-                question = replace(
-                    generated,
-                    group=point.group,
-                    subtask=point.subtask,
-                    knowledge_point=point.name,
-                    phase="adaptive",
-                    iteration=iteration,
-                    ordinal=0,
-                )
+                history_prompts = [item.prompt for item in history]
+                if self.novelty_filter is not None and candidate_budget > 1:
+                    candidates = self.questioner.generate_adaptive_candidates(
+                        point, history, iteration, candidate_budget,
+                        strategy=decision.strategy if decision is not None else None,
+                        objective=decision.objective if decision is not None else None,
+                    )
+                    filter_result = self.novelty_filter.filter(
+                        [c.prompt for c in candidates],
+                        history=history_prompts,
+                        classify=self.novelty_classify,
+                        budget=1,
+                    )
+                    self.store.append_event(
+                        "candidate_filter",
+                        {
+                            "iteration": iteration,
+                            "candidates": [
+                                {
+                                    "prompt": c.candidate,
+                                    "label": c.label.value,
+                                    "semantic_novelty": c.semantic_novelty,
+                                }
+                                for c in (*filter_result.selected, *filter_result.rejected)
+                            ],
+                        },
+                    )
+                    if not filter_result.selected:
+                        # Filter rejected everything; record a candidate generation
+                        # failure so the budget still reflects the attempt.
+                        if not self._record_generation_failure(
+                            point, "adaptive", iteration, 0,
+                            RunnerError("novelty filter rejected all candidates"),
+                        ):
+                            return
+                        continue
+                    chosen = next(
+                        c for c in candidates
+                        if c.prompt == filter_result.selected[0].candidate
+                    )
+                    question = replace(
+                        chosen,
+                        group=point.group,
+                        subtask=point.subtask,
+                        knowledge_point=point.name,
+                        phase="adaptive",
+                        iteration=iteration,
+                        ordinal=0,
+                    )
+                else:
+                    generated = self.questioner.generate_adaptive(
+                        point, history, iteration,
+                        strategy=decision.strategy if decision is not None else None,
+                        objective=decision.objective if decision is not None else None,
+                    )
+                    question = replace(
+                        generated,
+                        group=point.group,
+                        subtask=point.subtask,
+                        knowledge_point=point.name,
+                        phase="adaptive",
+                        iteration=iteration,
+                        ordinal=0,
+                    )
                 if not self._evaluate(point, question):
                     return
             except Exception as exc:

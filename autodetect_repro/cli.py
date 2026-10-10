@@ -7,7 +7,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from .checkpoint import CheckpointError
 from .analysis_pipeline import AdaptiveAnalysisPipeline
@@ -15,10 +15,11 @@ from .branches import BranchManager
 from .client import ApiError, SiliconFlowClient
 from .config import ConfigError, RunConfig, load_config
 from .controller import RuleController
+from .novelty import NoveltyFilter, NoveltyLabel
 from .reporting import ReportingError, write_report
 from .roles import (
     Assessor, BehavioralClusterer, Evaluator, Examiner, FailureSignatureAnalyzer,
-    LLMController, Questioner, RoleError,
+    LLMController, LLMNoveltyClassifier, Questioner, RoleError,
 )
 from .runner import ExperimentRunner, RunSummary
 
@@ -73,11 +74,85 @@ def _client(config: RunConfig, model: str) -> SiliconFlowClient:
     )
 
 
+def _build_novelty_filter(config: RunConfig) -> Optional[NoveltyFilter]:
+    """Build a NoveltyFilter if the config requests semantic filtering.
+
+    Returns ``None`` for the baseline path and for any config that does not
+    declare an embedding service.  Failures to construct the embedding client
+    are surfaced as ``ConfigError`` so the operator sees them up front rather
+    than as a silent fallback.
+    """
+    if config.search.mode == "baseline":
+        return None
+    if not config.embedding.enabled:
+        return None
+    if config.search.candidate_questions_per_round <= 1:
+        return None
+
+    embedding_fn = _build_embedding_function(config)
+    return NoveltyFilter(
+        embedding=embedding_fn,
+        top_k=config.search.novelty_top_k,
+    )
+
+
+def _build_novelty_classifier(config: RunConfig) -> Optional[
+    Callable[[str, Sequence[str]], NoveltyLabel]
+]:
+    """Build an LLM-backed novelty classifier.
+
+    Returns ``None`` when no embedding service is configured, so the runner
+    keeps using its safe "all DISTINCT" default.  When embedding is enabled
+    we always wire the classifier — without it the design contract (embed
+    + LLM label + sort) collapses to "embedding-only sort".
+    """
+    if config.search.mode == "baseline":
+        return None
+    if not config.embedding.enabled:
+        return None
+    agent = _client(config, config.models.agent_model)
+    # A single shared classifier is used across all knowledge points; the
+    # prompt includes the knowledge point dynamically if/when the runner
+    # forwards it.  For now a context-free call is correct because the
+    # neighbors carry enough semantic information.
+    return LLMNoveltyClassifier(
+        agent,
+        max_tokens=config.limits.max_output_tokens,
+    )
+
+
+def _build_embedding_function(config: RunConfig) -> Callable[[str], Sequence[float]]:
+    """Construct a single-text embedding function honoring ``EmbeddingConfig``."""
+    if config.embedding.type == "remote":
+        from .embedding_client import RemoteEmbeddingClient
+        client = RemoteEmbeddingClient(
+            base_url=config.embedding.base_url,
+            api_key=os.environ.get(config.embedding.api_key_env)
+            if config.embedding.api_key_env
+            else None,
+            batch_size=config.embedding.batch_size,
+        )
+        return client.encode
+    if config.embedding.type in {"local", "huggingface"}:
+        from .embedding_service import get_embedding_function
+        return get_embedding_function(
+            model_type=config.embedding.type,
+            model_path=config.embedding.model_path or None,
+            model_name=config.embedding.model_name or None,
+            normalize=config.embedding.normalize,
+        )
+    raise ConfigError(
+        "embedding.type {} is not supported".format(config.embedding.type)
+    )
+
+
 def execute_run(config: RunConfig, run_dir: Path) -> RunSummary:
     agent = _client(config, config.models.agent_model)
     target = _client(config, config.models.target_model)
     controller = None
     analysis_pipeline = None
+    novelty_filter = _build_novelty_filter(config)
+    novelty_classifier = _build_novelty_classifier(config)
     if config.search.mode == "adaptive_rule":
         controller = RuleController(
             candidate_cap=config.search.candidate_questions_per_round,
@@ -102,6 +177,8 @@ def execute_run(config: RunConfig, run_dir: Path) -> RunSummary:
         assessor=Assessor(config, agent),
         controller=controller,
         analysis_pipeline=analysis_pipeline,
+        novelty_filter=novelty_filter,
+        novelty_classify=novelty_classifier,
     )
     summary = runner.run()
     write_report(run_dir)

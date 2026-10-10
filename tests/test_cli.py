@@ -4,7 +4,10 @@ import pytest
 import yaml
 
 from autodetect_repro.checkpoint import CheckpointStore
-from autodetect_repro.cli import EXIT_API, EXIT_CONFIG, EXIT_INCOMPLETE, main
+from autodetect_repro.cli import (
+    EXIT_API, EXIT_CONFIG, EXIT_INCOMPLETE, _build_novelty_classifier,
+    _build_novelty_filter, main,
+)
 from autodetect_repro.config import load_config
 from autodetect_repro.runner import RunSummary
 
@@ -154,3 +157,48 @@ def test_api_failure_and_incomplete_run_have_distinct_exit_codes(
     assert api_exit == EXIT_API
     assert "unit-test-secret" not in api_error
     assert incomplete_exit == EXIT_INCOMPLETE
+
+
+def test_baseline_mode_does_not_build_novelty_classifier():
+    config = load_config(
+        FULL_CONFIG, {"SILICONFLOW_API_KEY": "unit-test-secret"}
+    )
+    # Full config is baseline by default.
+    assert config.search.mode == "baseline"
+    assert _build_novelty_classifier(config) is None
+
+
+def test_adaptive_with_embedding_builds_classifier(monkeypatch, tmp_path):
+    # Build a config that opts into the adaptive+embedding path without
+    # requiring a real network call.
+    raw = yaml.safe_load(FULL_CONFIG.read_text())
+    raw["search"] = {
+        **raw["search"],
+        "mode": "adaptive_rule",
+        "candidate_questions_per_round": 2,
+        "novelty_top_k": 2,
+    }
+    raw["embedding"] = {
+        "type": "local",
+        "model_name": "sentence-transformers/paraphrase-MiniLM-L6-v2",
+        "batch_size": 8,
+        "max_length": 64,
+    }
+    cfg_path = tmp_path / "adaptive.yaml"
+    cfg_path.write_text(yaml.safe_dump(raw))
+
+    # The local embedding loader would download a model in real use; mock it
+    # out so the test stays offline.
+    monkeypatch.setattr(
+        "autodetect_repro.embedding_service.get_embedding_function",
+        lambda **kwargs: (lambda text: [0.0] * 4),
+    )
+
+    config = load_config(
+        cfg_path, {"SILICONFLOW_API_KEY": "unit-test-secret"}
+    )
+
+    classifier = _build_novelty_classifier(config)
+    assert classifier is not None
+    # Calling it without going through the LLM is enough to confirm wiring.
+    assert callable(classifier)
