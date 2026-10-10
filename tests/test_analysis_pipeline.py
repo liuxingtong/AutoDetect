@@ -192,3 +192,82 @@ def test_propose_without_independence_returns_continue():
     )
     assert results[0][0].decision is PromotionDecision.CONTINUE
     assert manager.get(branch_id).status == "verifying"
+
+
+def test_promotion_judge_overrides_evidence_gate_promote():
+    """The judge is consulted only after the evidence gate says PROMOTE.
+
+    A judge that returns CONTINUE_VERIFICATION must override the gate
+    and roll the branch status back to "verifying"."""
+    manager = BranchManager(min_support=2)
+    pipeline = _build_pipeline(manager)
+
+    pipeline.observe(make_record(identifier="s1", prompt="weak-1"))
+    pipeline.observe(make_record(identifier="s2", prompt="weak-2"))
+    branch_id = "list format:list constraint"
+    pipeline.record_verification(branch_id, "ver-1")
+
+    def judge(branch, evidence):
+        return PromotionDecision.CONTINUE
+
+    pipeline.promotion_judge = judge
+    results = pipeline.propose_promotions(
+        auto_promote=True,
+        semantic_independence={branch_id: True},
+    )
+    assert len(results) == 1
+    proposal, (event_type, payload) = results[0]
+    assert proposal.decision is PromotionDecision.CONTINUE
+    assert "judge returned" in proposal.reason
+    assert manager.get(branch_id).status == "verifying"
+    assert event_type == "promotion_proposal"
+
+
+def test_promotion_judge_failure_keeps_evidence_gate_decision():
+    """If the judge raises, the pipeline must keep the original PROMOTE.
+
+    LLM output must never silently block deterministic evidence gates."""
+    manager = BranchManager(min_support=2)
+    pipeline = _build_pipeline(manager)
+
+    pipeline.observe(make_record(identifier="s1", prompt="weak-1"))
+    pipeline.observe(make_record(identifier="s2", prompt="weak-2"))
+    branch_id = "list format:list constraint"
+    pipeline.record_verification(branch_id, "ver-1")
+
+    def judge(branch, evidence):
+        raise RuntimeError("judge network failure")
+
+    pipeline.promotion_judge = judge
+    results = pipeline.propose_promotions(
+        auto_promote=True,
+        semantic_independence={branch_id: True},
+    )
+    proposal, _ = results[0]
+    assert proposal.decision is PromotionDecision.PROMOTE
+    assert manager.get(branch_id).status == "promoted"
+
+
+def test_promotion_judge_not_consulted_when_evidence_gate_blocks():
+    """A judge that returns PROMOTE is meaningless if the evidence gate
+    said CONTINUE; the pipeline must not call the judge in that case."""
+    manager = BranchManager(min_support=2)
+    pipeline = _build_pipeline(manager)
+
+    # Only one supporting sample — below the min_support threshold.
+    pipeline.observe(make_record(identifier="s1", prompt="weak-1"))
+
+    judge_calls = []
+
+    def judge(branch, evidence):
+        judge_calls.append(branch.branch_id)
+        return PromotionDecision.PROMOTE
+
+    pipeline.promotion_judge = judge
+    results = pipeline.propose_promotions(
+        auto_promote=True,
+        semantic_independence={"list format:list constraint": True},
+    )
+    proposal, _ = results[0]
+    assert proposal.decision is PromotionDecision.CONTINUE
+    assert judge_calls == []  # gate blocked → judge never called

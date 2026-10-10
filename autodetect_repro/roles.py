@@ -95,6 +95,17 @@ class PromotionJudge:
             return decision
         return _structured_call(self.client, promotion_prompt(branch, evidence), max_tokens=self.config.limits.max_output_tokens, temperature=0.0, validate=validate)
 
+    def __call__(self, branch, evidence):
+        """Callable adapter that returns a PromotionDecision enum value.
+
+        Used by the AdaptiveAnalysisPipeline to invoke the judge after the
+        deterministic evidence gate says "promote".  Any error propagates
+        so the pipeline can keep the original proposal as a fallback.
+        """
+        from .branches import PromotionDecision
+        decision = self.judge(branch, evidence)
+        return PromotionDecision(decision)
+
 
 class LLMNoveltyClassifier:
     """Callable LLM-backed novelty classifier for the :class:`NoveltyFilter`.

@@ -19,7 +19,7 @@ from .novelty import NoveltyFilter, NoveltyLabel
 from .reporting import ReportingError, write_report
 from .roles import (
     Assessor, BehavioralClusterer, Evaluator, Examiner, FailureSignatureAnalyzer,
-    LLMController, LLMNoveltyClassifier, Questioner, RoleError,
+    LLMController, LLMNoveltyClassifier, PromotionJudge, Questioner, RoleError,
 )
 from .runner import ExperimentRunner, RunSummary
 
@@ -165,6 +165,7 @@ def execute_run(config: RunConfig, run_dir: Path) -> RunSummary:
             signature_extractor=FailureSignatureAnalyzer(config, agent),
             behavior_classifier=BehavioralClusterer(config, agent),
             branch_manager=BranchManager(),
+            promotion_judge=PromotionJudge(config, agent),
         )
     runner = ExperimentRunner(
         config,

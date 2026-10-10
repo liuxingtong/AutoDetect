@@ -1,7 +1,7 @@
 """Post-evaluation adaptive analysis separated from experiment scheduling."""
 
 from dataclasses import asdict, replace as _dataclass_replace
-from typing import Any, Callable, Dict, List, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .behavior import BehaviorLabel, BehavioralAnalyzer, FailureSignature
 from .branches import (
@@ -23,11 +23,15 @@ class AdaptiveAnalysisPipeline:
         signature_extractor: Callable[[SampleRecord], FailureSignature],
         behavior_classifier: Callable[[FailureSignature, Sequence[FailureSignature]], BehaviorLabel],
         branch_manager: BranchManager,
+        promotion_judge: Optional[
+            Callable[[BranchState, Dict[str, Any]], "PromotionDecision"]
+        ] = None,
     ) -> None:
         self.signature_extractor = signature_extractor
         self.behavior_classifier = behavior_classifier
         self.behavior_analyzer = BehavioralAnalyzer()
         self.branch_manager = branch_manager
+        self.promotion_judge = promotion_judge
         self.target_calls = 0
 
     def observe(self, record: SampleRecord) -> Tuple[Event, ...]:
@@ -129,6 +133,48 @@ class AdaptiveAnalysisPipeline:
             proposal = self.branch_manager.propose(
                 branch_id, semantically_independent=semantically_independent
             )
+            # The PromotionJudge is consulted only when the evidence gate
+            # already says "promote" — the judge is a second opinion, not a
+            # substitute for the deterministic evidence rules.  If the
+            # judge returns a more conservative decision (reject /
+            # continue), we override and roll the branch status back to
+            # "verifying".  Judge failures must NOT block promotion, so
+            # the LLM call is wrapped in a try/except.
+            if (
+                proposal.decision is PromotionDecision.PROMOTE
+                and self.promotion_judge is not None
+            ):
+                evidence = {
+                    "supporting_samples": list(branch.supporting_samples),
+                    "verifications": list(branch.verifications),
+                    "counterexamples": list(branch.counterexamples),
+                    "semantically_independent": semantically_independent,
+                }
+                try:
+                    judged = self.promotion_judge(branch, evidence)
+                    if isinstance(judged, PromotionDecision) and judged != proposal.decision:
+                        # Roll the status back; promotion did not survive
+                        # the LLM judgment.
+                        if not auto_promote:
+                            # Audit mode: nothing to roll back (audit
+                            # never flipped status to promoted).
+                            pass
+                        else:
+                            self.branch_manager._branches[branch_id] = _dataclass_replace(
+                                branch, status="verifying"
+                            )
+                        proposal = PromotionProposal(
+                            branch_id=branch_id,
+                            decision=judged,
+                            knowledge_point=branch.knowledge_point,
+                            reason="evidence gate passed; promotion judge returned {}".format(
+                                judged.value
+                            ),
+                        )
+                except Exception:
+                    # Judge failure must not block the deterministic
+                    # evidence gate.  Keep the original proposal.
+                    pass
             if not auto_promote:
                 # Audit mode: roll back any status change made by propose()
                 # so the operator must explicitly accept the proposal.
