@@ -670,3 +670,78 @@ def test_resume_loads_promoted_points_as_discovered(tmp_path):
     promoted = [point for point in points if point.name == "promoted-x"]
     assert len(promoted) == 1
     assert promoted[0].discovered is True
+
+
+def test_most_recent_branch_id_uses_most_recent_weakness(tmp_path):
+    """The controller's branch_id should match the real
+    '<point>:<key_point>' form, taken from the most recent weakness
+    for the point, so audit log rows correlate with branch_update
+    events.  Before any weakness is observed the helper returns
+    None and the runner falls back to the bare point name."""
+    config = small_config(points=1, seeds=0, adaptive=0, cap=5)
+    run_dir = tmp_path / "run"
+    runner, _, _, _, _ = make_runner(config, run_dir)
+    point = KnowledgePoint("group", "subtask", "point-0")
+    # No records yet: helper returns None.
+    assert runner._most_recent_branch_id(point) is None
+    # Inject a weakness record with a known key_point.
+    record = evaluated_record(
+        Question(
+            "group", "subtask", "point-0", "shared-key", "p", "seed", 0, 0
+        )
+    )
+    runner._records.append(record)
+    assert runner._most_recent_branch_id(point) == "point-0:shared-key"
+
+
+def test_search_decision_branch_id_matches_real_branch(tmp_path):
+    """The search_decision event emitted by the runner carries the
+    real branch_id ('<point>:<key_point>') when a weakness has been
+    observed, not the bare point name."""
+    config = small_config(points=1, seeds=1, adaptive=1)
+    run_dir = tmp_path / "run"
+
+    from autodetect_repro.analysis_pipeline import AdaptiveAnalysisPipeline
+    from autodetect_repro.behavior import BehaviorLabel, FailureSignature
+    from autodetect_repro.branches import BranchManager
+    from autodetect_repro.controller import RuleController
+
+    pipeline = AdaptiveAnalysisPipeline(
+        signature_extractor=lambda record: FailureSignature(
+            violation=record.key_point or "v",
+            observed_behavior="b",
+            trigger_context="c",
+            evidence="e",
+        ),
+        behavior_classifier=lambda s, r: BehaviorLabel.DIFFERENT,
+        branch_manager=BranchManager(min_support=2),
+    )
+    log = []
+    runner = ExperimentRunner(
+        config,
+        run_dir,
+        examiner=FakeExaminer(
+            [KnowledgePoint("group", "subtask", "point-0")], log
+        ),
+        questioner=FakeQuestioner(config, [], shared_key_point=True),
+        evaluator=FakeEvaluator([]),
+        assessor=FakeAssessor(AssessorDecision(False, None, "stop"), []),
+        analysis_pipeline=pipeline,
+        controller=RuleController(candidate_cap=2, test_cap=2),
+    )
+    runner.run()
+
+    search_decisions = [
+        e for e in CheckpointStore(run_dir, config).events()
+        if e.get("event_type") == "search_decision"
+    ]
+    assert search_decisions, "expected at least one search_decision event"
+    # All branch_ids must include the ':<key_point>' suffix, not the
+    # bare point name.
+    for event in search_decisions:
+        branch_id = event["branch_id"]
+        assert branch_id != "point-0", (
+            "search_decision.branch_id is the bare point name, not "
+            "the real <point>:<key_point> form: {}".format(branch_id)
+        )
+        assert branch_id.startswith("point-0:"), branch_id

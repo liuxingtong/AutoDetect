@@ -417,9 +417,18 @@ class ExperimentRunner:
                         novel_failures=recent_weak,
                         stagnation_rounds=2 if recent_iterations and recent_weak == 0 else 0,
                     )
+                    # The controller's branch_id should be an actual
+                    # branch tracked by the analysis pipeline (the
+                    # format is "<point>:<key_point>"), not the bare
+                    # point name.  Pick the most recent weakness
+                    # record's branch, falling back to the bare name
+                    # when no weakness has been observed yet (so the
+                    # first adaptive iteration still emits a valid
+                    # audit row even before any failure).
+                    branch_id = self._most_recent_branch_id(point) or point.name
                     decision = self.controller.decide(
                         knowledge_point=point.name,
-                        branch_id=point.name,
+                        branch_id=branch_id,
                         stats=stats,
                         remaining_budget=max(0, self.config.limits.max_total_samples - len(self._records)),
                     )
@@ -562,6 +571,30 @@ class ExperimentRunner:
             for record in self._records
             if record.group == subtask.group and record.subtask == subtask.name
         ]
+
+    def _most_recent_branch_id(
+        self, point: KnowledgePoint
+    ) -> Optional[str]:
+        """Return the real branch_id of the most recent weakness for ``point``.
+
+        Branches are stored in the analysis pipeline as
+        ``"{point.name}:{key_point}"``; the controller's decision
+        needs this exact form so downstream consumers (e.g. the
+        audit log) can correlate with branch_update events.  Returns
+        ``None`` when no weakness has been observed for the point
+        yet, in which case the caller should fall back to the bare
+        point name.
+        """
+        point_history = self._point_history(point)
+        for record in reversed(point_history):
+            if (
+                record.status == "valid"
+                and record.is_weakness
+            ):
+                return "{}:{}".format(
+                    point.name, record.key_point or "violation"
+                )
+        return None
 
     def _configured_points(self) -> Tuple[KnowledgePoint, ...]:
         configured = tuple(
