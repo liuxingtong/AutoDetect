@@ -38,6 +38,7 @@ class ExperimentRunner:
         evaluator: object,
         assessor: object,
         controller: Optional[object] = None,
+        analysis_pipeline: Optional[object] = None,
         interrupt_check: Optional[Callable[[], bool]] = None,
     ) -> None:
         self.config = config
@@ -47,6 +48,7 @@ class ExperimentRunner:
         self.evaluator = evaluator
         self.assessor = assessor
         self.controller = controller
+        self.analysis_pipeline = analysis_pipeline
         self.interrupt_check = interrupt_check or (lambda: False)
         self.store: Optional[CheckpointStore] = None
         self._records: List[SampleRecord] = []
@@ -132,6 +134,9 @@ class ExperimentRunner:
                 identifier, question, self._redacted_error(exc)
             )
         self._append(record)
+        if self.analysis_pipeline is not None and self.store is not None:
+            for event_type, payload in self.analysis_pipeline.observe(record):
+                self.store.append_event(event_type, payload)
         return True
 
     def _record_generation_failure(
