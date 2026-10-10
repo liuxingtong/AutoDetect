@@ -365,6 +365,12 @@ class ExperimentRunner:
                     "duplicate sample id in checkpoint: {}".format(record.sample_id)
                 )
             self._by_id[record.sample_id] = record
+        # Replay the analysis pipeline so behavioral clusters, branch state,
+        # and the target-call counter match what the live run had at the
+        # same checkpoint.  Without this, a resumed run starts from a clean
+        # slate and would issue different search decisions.
+        if self.analysis_pipeline is not None:
+            self.analysis_pipeline.replay(self.store.events())
 
     def _summary(self) -> RunSummary:
         valid = [record for record in self._records if record.status == "valid"]

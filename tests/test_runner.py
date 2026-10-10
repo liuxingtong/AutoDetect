@@ -74,7 +74,7 @@ class FakeQuestioner:
             for ordinal in range(self.config.search.seed_questions_per_point)
         )
 
-    def generate_adaptive(self, point, history, iteration):
+    def generate_adaptive(self, point, history, iteration, **kwargs):
         self.adaptive_calls.append((point.name, iteration, len(history)))
         self.log.append("generate-adaptive:{}:{}".format(point.name, iteration))
         return Question(
@@ -338,3 +338,91 @@ def test_injected_interrupt_stops_cleanly_after_checkpoint(tmp_path):
     assert summary.scheduled == 1
     assert len(evaluator.calls) == 1
     assert len(CheckpointStore(tmp_path / "run", config).records()) == 1
+
+
+class _StubAnalysisPipeline:
+    """Records every observe() and replay() call so the resume test can
+    assert the runner replays events at startup.  Delegates to a real
+    AdaptiveAnalysisPipeline so replay() actually rebuilds state."""
+
+    def __init__(self):
+        from autodetect_repro.analysis_pipeline import (
+            AdaptiveAnalysisPipeline,
+        )
+        from autodetect_repro.branches import BranchManager
+        self._delegate = AdaptiveAnalysisPipeline(
+            signature_extractor=lambda record: type("S", (), {})(),
+            behavior_classifier=lambda s, r: "different",
+            branch_manager=BranchManager(min_support=2),
+        )
+        self.observe_calls = []
+        self.replay_calls = 0
+
+    def observe(self, record):
+        self.observe_calls.append(record)
+        return self._delegate.observe(record)
+
+    def replay(self, events):
+        self.replay_calls += 1
+        return self._delegate.replay(events)
+
+    @property
+    def target_calls(self):
+        return self._delegate.target_calls
+
+    @property
+    def branch_manager(self):
+        return self._delegate.branch_manager
+
+    @property
+    def behavior_analyzer(self):
+        return self._delegate.behavior_analyzer
+
+
+def test_resume_replays_analysis_pipeline_state_from_events(tmp_path):
+    config = small_config(points=1, seeds=1, adaptive=0)
+    run_dir = tmp_path / "run"
+
+    # First, complete the seed sample so checkpoint has a record.
+    first, _, _, _, _ = make_runner(config, run_dir)
+    first.run()
+
+    # Manually write analysis events that a live run would have produced.
+    store = CheckpointStore(run_dir, config)
+    store.append_event(
+        "failure_analysis",
+        {
+            "sample_id": "manual-1",
+            "signature": {
+                "violation": "v",
+                "observed_behavior": "b",
+                "trigger_context": "c",
+                "evidence": "e",
+            },
+        },
+    )
+    store.append_event(
+        "branch_update",
+        {
+            "branch_id": "point-0:v",
+            "status": "verifying",
+            "supporting_samples": ["manual-1"],
+        },
+    )
+
+    # A brand-new pipeline in a brand-new runner process simulates resume.
+    fresh_pipeline = _StubAnalysisPipeline()
+    resumed, _, _, _, _ = make_runner(config, run_dir)
+    # Inject the stub pipeline into the resumed runner.
+    resumed.analysis_pipeline = fresh_pipeline
+    resumed.run()
+
+    # Replay must have been called exactly once during _load_existing().
+    assert fresh_pipeline.replay_calls == 1
+    # The replayed failure_analysis event contributed one target_call.
+    assert fresh_pipeline.target_calls == 1
+    # The branch snapshot was restored.
+    branch = fresh_pipeline.branch_manager.get("point-0:v")
+    assert branch is not None
+    assert branch.supporting_samples == ("manual-1",)
+    assert branch.status == "verifying"
