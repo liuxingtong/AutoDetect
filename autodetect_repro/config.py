@@ -105,7 +105,18 @@ def load_config(path: Path, environ: Mapping[str, str]) -> RunConfig:
             raw_search, "max_discovered_points_per_subtask"
         ),
         random_seed=int(raw_search.get("random_seed", 240616714)),
+        mode=str(raw_search.get("mode", "baseline")),
+        candidate_questions_per_round=int(raw_search.get("candidate_questions_per_round", 1)),
+        novelty_top_k=int(raw_search.get("novelty_top_k", 3)),
+        random_exploration_ratio=float(raw_search.get("random_exploration_ratio", 0.1)),
+        auto_promote=bool(raw_search.get("auto_promote", False)),
     )
+    if search.mode not in {"baseline", "adaptive_rule", "adaptive_llm"}:
+        raise ConfigError("search.mode must be baseline, adaptive_rule, or adaptive_llm")
+    if search.candidate_questions_per_round <= 0 or search.novelty_top_k <= 0:
+        raise ConfigError("candidate_questions_per_round and novelty_top_k must be positive")
+    if not 0.0 <= search.random_exploration_ratio <= 1.0:
+        raise ConfigError("random_exploration_ratio must be between 0 and 1")
     limits = LimitsConfig(
         max_total_samples=_positive_int(raw_limits, "max_total_samples"),
         max_attempts_per_request=_positive_int(

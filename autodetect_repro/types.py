@@ -21,6 +21,11 @@ class SearchConfig:
     max_initial_points: int
     max_discovered_points_per_subtask: int
     random_seed: int
+    mode: str = "baseline"
+    candidate_questions_per_round: int = 1
+    novelty_top_k: int = 3
+    random_exploration_ratio: float = 0.1
+    auto_promote: bool = False
 
 
 @dataclass(frozen=True)

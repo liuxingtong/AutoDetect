@@ -6,6 +6,42 @@ from typing import Sequence
 from .types import KnowledgePoint, Question, SampleRecord, SubtaskConfig
 
 
+def controller_prompt(taxonomy, branch_statistics, recent_cases, budget: int) -> str:
+    return (
+        "Act as the AutoDetect Adaptive Controller. Choose exploit, explore, verify, or restart "
+        "to maximize confirmed non-duplicate failures under a strict budget. Return JSON only. "
+        "Do not modify taxonomy or exceed the supplied budget.\n"
+        "taxonomy={taxonomy}\nbranch_statistics={stats}\nrecent_cases={cases}\nremaining_budget={budget}"
+    ).format(taxonomy=taxonomy, stats=branch_statistics, cases=recent_cases, budget=budget)
+
+
+def failure_signature_prompt(question: str, answer: str, reference: str, evidence: str) -> str:
+    return (
+        "Act as an AutoDetect failure analyzer. Describe only observable behavior, not an internal cause. "
+        "Return JSON with violation, observed_behavior, trigger_context, and evidence. "
+        "Use is_failure false when evidence does not establish a failure.\n"
+        "question={question}\nanswer={answer}\nreference={reference}\nprogrammatic_evidence={evidence}"
+    ).format(question=question, answer=answer, reference=reference, evidence=evidence)
+
+
+def behavioral_clustering_prompt(signature, representatives) -> str:
+    return (
+        "Compare one Failure Signature with representative behavior clusters. Return JSON only with "
+        "label: Same, Different, or Uncertain, and a reason. Different requires a distinct observed "
+        "behavior or a materially different trigger condition; do not infer hidden causes.\n"
+        "new_signature={signature}\nrepresentatives={representatives}"
+    ).format(signature=signature, representatives=representatives)
+
+
+def promotion_prompt(branch, evidence) -> str:
+    return (
+        "Act as the AutoDetect Examiner for taxonomy promotion. Return JSON only with decision: "
+        "promote, continue_verification, or reject. Promote only when evidence includes multiple "
+        "supporting cases, a repeat or controlled comparison, and an independently testable meaning.\n"
+        "branch={branch}\nevidence={evidence}"
+    ).format(branch=branch, evidence=evidence)
+
+
 def examiner_prompt(subtasks: Sequence[SubtaskConfig]) -> str:
     taxonomy = [
         {
