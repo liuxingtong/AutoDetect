@@ -2,10 +2,11 @@
 
 import csv
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import matplotlib
 
@@ -356,6 +357,9 @@ def write_report(run_dir: Path) -> ReportPaths:
     branch_status = _branch_status(run_dir)
     promotion_decisions = _promotion_decisions(run_dir)
     diversity = _diversity_metrics(run_dir)
+    search_decisions_md = _search_decisions(run_dir)
+    candidate_filters_md = _candidate_filters(run_dir)
+    behavior_clusters_md = _behavior_clusters(run_dir)
     report = """# AutoDetect Small-Scale Reproduction
 
 ## Scope
@@ -387,6 +391,16 @@ def write_report(run_dir: Path) -> ReportPaths:
 
 {promotion_summary}
 
+## Search & Filtering
+
+{search_decisions}
+
+{candidate_filters}
+
+## Behavior Clusters
+
+{behavior_clusters}
+
 ## Recorded Evaluation Usage
 
 - Requests: {requests}
@@ -409,6 +423,9 @@ def write_report(run_dir: Path) -> ReportPaths:
         behavioral_diversity=diversity,
         branch_summary=branch_status,
         promotion_summary=promotion_decisions,
+        search_decisions=search_decisions_md,
+        candidate_filters=candidate_filters_md,
+        behavior_clusters=behavior_clusters_md,
         requests=metrics.request_count,
         prompt_tokens=metrics.prompt_tokens,
         completion_tokens=metrics.completion_tokens,
@@ -527,3 +544,110 @@ def _phase_row(metrics: Metrics, phase: str) -> Optional[IterationRow]:
         (row for row in metrics.iterations if row.phase == phase),
         None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Summary helpers for events that were previously emitted but never
+# surfaced in the report.  These are pure read-only filters over
+# events.jsonl so they degrade gracefully when the file is absent
+# (which is the case for any run driven by domain_runner.py).
+# ---------------------------------------------------------------------------
+
+
+def _load_events(run_dir: Path) -> List[Dict[str, Any]]:
+    """Read every JSON object from ``events.jsonl``; return [] on miss."""
+    path = run_dir / "events.jsonl"
+    if not path.exists():
+        return []
+    out: List[Dict[str, Any]] = []
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict):
+                out.append(event)
+    return out
+
+
+def _search_decisions(run_dir: Path) -> str:
+    """Markdown table of every ``search_decision`` event."""
+    events = [
+        e for e in _load_events(run_dir)
+        if e.get("event_type") == "search_decision"
+    ]
+    if not events:
+        return "_(no search_decision events)_"
+    lines = [
+        "| knowledge_point | strategy | budget (c/t) | iteration | reason |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for event in events:
+        lines.append(
+            "| `{kp}` | {strategy} | {cb} / {tb} | {iter} | {reason} |".format(
+                kp=event.get("knowledge_point", "?"),
+                strategy=event.get("strategy", "?"),
+                cb=event.get("candidate_budget", "?"),
+                tb=event.get("test_budget", "?"),
+                iter=event.get("iteration", "?"),
+                reason=(event.get("reason", "") or "")[:80],
+            )
+        )
+    return "\n".join(lines)
+
+
+def _candidate_filters(run_dir: Path) -> str:
+    """Markdown table of every ``candidate_filter`` event."""
+    events = [
+        e for e in _load_events(run_dir)
+        if e.get("event_type") == "candidate_filter"
+    ]
+    if not events:
+        return "_(no candidate_filter events)_"
+    lines = [
+        "| iteration | in | selected | rejected |",
+        "| --- | --- | --- | --- |",
+    ]
+    for event in events:
+        candidates = event.get("candidates", []) or []
+        decisions = event.get("decisions", []) or []
+        selected = sum(1 for d in decisions if d.get("label") != "duplicate")
+        lines.append(
+            "| {iter} | {n} | {s} | {r} |".format(
+                iter=event.get("iteration", "?"),
+                n=len(candidates),
+                s=selected,
+                r=len(decisions) - selected,
+            )
+        )
+    return "\n".join(lines)
+
+
+def _behavior_clusters(run_dir: Path) -> str:
+    """Markdown table of the most recent label per sample_id."""
+    events = [
+        e for e in _load_events(run_dir)
+        if e.get("event_type") == "behavior_cluster_update"
+    ]
+    if not events:
+        return "_(no behavior_cluster_update events)_"
+    latest: Dict[str, str] = {}
+    for event in events:
+        sample_id = event.get("sample_id")
+        if isinstance(sample_id, str):
+            latest[sample_id] = event.get("label", "?")
+    if not latest:
+        return "_(no behavior_cluster_update events)_"
+    # Distribution
+    counts = Counter(latest.values())
+    lines = [
+        "| label | samples |",
+        "| --- | --- |",
+    ]
+    for label, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        lines.append("| {} | {} |".format(label, n))
+    return "\n".join(lines)

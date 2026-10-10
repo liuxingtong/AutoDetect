@@ -9,8 +9,12 @@ from autodetect_repro.checkpoint import CheckpointStore
 from autodetect_repro.config import load_config
 from autodetect_repro.reporting import (
     _branch_status,
+    _behavior_clusters,
+    _candidate_filters,
     _diversity_metrics,
+    _load_events,
     _promotion_decisions,
+    _search_decisions,
     write_report,
 )
 
@@ -184,3 +188,113 @@ def test_write_report_includes_branch_and_promotion_sections(tmp_path, config):
     assert "list format:violation" in markdown
     assert "continue_verification" in markdown
     assert "Behavioral richness" in markdown
+
+
+def test_load_events_handles_missing_file(tmp_path):
+    assert _load_events(tmp_path) == []
+
+
+def test_load_events_skips_malformed_json(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        '{"event_type": "x"}\n'
+        'this is not json\n'
+        '{"event_type": "y"}\n',
+        encoding="utf-8",
+    )
+    events = _load_events(tmp_path)
+    assert len(events) == 2
+    assert [e["event_type"] for e in events] == ["x", "y"]
+
+
+def test_search_decisions_renders_table(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "event_type": "search_decision",
+                "knowledge_point": "p1",
+                "branch_id": "p1:v",
+                "strategy": "verify",
+                "objective": "obj",
+                "reason": "recent failures include behavior not yet sufficiently verified",
+                "candidate_budget": 3,
+                "test_budget": 2,
+                "iteration": 2,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    md = _search_decisions(tmp_path)
+    assert "p1" in md
+    assert "verify" in md
+    assert "3 / 2" in md
+    assert "iteration" in md
+
+
+def test_search_decisions_empty(tmp_path):
+    assert "no search_decision" in _search_decisions(tmp_path)
+
+
+def test_candidate_filters_renders_summary(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "event_type": "candidate_filter",
+                "iteration": 3,
+                "candidates": [
+                    {"prompt": "p1"},
+                    {"prompt": "p2"},
+                    {"prompt": "p3"},
+                ],
+                "decisions": [
+                    {"prompt": "p1", "label": "distinct"},
+                    {"prompt": "p2", "label": "duplicate"},
+                    {"prompt": "p3", "label": "distinct"},
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    md = _candidate_filters(tmp_path)
+    assert "3" in md
+    assert "2" in md  # 2 selected (distinct)
+    assert "1" in md  # 1 rejected (duplicate)
+
+
+def test_behavior_clusters_counts_latest_label_per_sample(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "event_type": "behavior_cluster_update",
+                "sample_id": "s1",
+                "label": "different",
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "event_type": "behavior_cluster_update",
+                "sample_id": "s1",
+                "label": "same",  # overrides the previous label
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "event_type": "behavior_cluster_update",
+                "sample_id": "s2",
+                "label": "different",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    md = _behavior_clusters(tmp_path)
+    # s1 ends as "same", s2 as "different" -> 1 each
+    assert "| same | 1 |" in md
+    assert "| different | 1 |" in md
