@@ -146,3 +146,10 @@ def test_record_containing_secret_is_rejected_before_write(tmp_path, config):
         store.append(make_record(prompt="Do not leak unit-test-secret"))
 
     assert "unit-test-secret" not in store.samples_path.read_text()
+
+
+def test_event_append_and_resume_without_secret(tmp_path, config):
+    store = CheckpointStore(tmp_path / "run", config)
+    store.append_event("diversity_metrics", {"gain": 2})
+    assert store.events() == [{"event_type": "diversity_metrics", "gain": 2}]
+    assert "unit-test-secret" not in store.events_path.read_text()

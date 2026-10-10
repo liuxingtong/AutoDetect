@@ -82,6 +82,7 @@ class CheckpointStore:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_path = self.run_dir / "manifest.json"
         self.samples_path = self.run_dir / "samples.jsonl"
+        self.events_path = self.run_dir / "events.jsonl"
         self.quarantine_path = self.run_dir / "samples.jsonl.quarantine"
         self._secret = config.models.api_key
         fingerprint = config_fingerprint(config)
@@ -106,6 +107,7 @@ class CheckpointStore:
                 + "\n",
             )
         self.samples_path.touch(exist_ok=True)
+        self.events_path.touch(exist_ok=True)
 
     def append(self, record: SampleRecord) -> None:
         line = _canonical_json(asdict(record))
@@ -115,6 +117,37 @@ class CheckpointStore:
             handle.write(line + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+
+    def append_event(self, event_type: str, payload: Dict[str, Any]) -> None:
+        """Append a redacted, typed event without changing sample recovery."""
+        if not event_type or not isinstance(payload, dict):
+            raise CheckpointError("event type and payload are required")
+        event = {"event_type": event_type, **payload}
+        line = _canonical_json(event)
+        if self._secret and self._secret in line:
+            raise CheckpointError("refusing to persist an event containing a secret")
+        with self.events_path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def events(self) -> List[Dict[str, Any]]:
+        try:
+            lines = self.events_path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            raise CheckpointError("cannot read events checkpoint") from exc
+        events = []
+        for index, line in enumerate(lines):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise CheckpointError("invalid event at line {}".format(index + 1)) from exc
+            if not isinstance(payload, dict) or not payload.get("event_type"):
+                raise CheckpointError("invalid event at line {}".format(index + 1))
+            events.append(payload)
+        return events
 
     def _repair_final_line(self, valid_lines: List[str], bad_line: str) -> None:
         with self.quarantine_path.open("a", encoding="utf-8") as handle:
