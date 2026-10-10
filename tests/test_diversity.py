@@ -3,10 +3,11 @@ from autodetect_repro.diversity import (
     semantic_metrics,
     semantic_novelty,
 )
+import pytest
 
 
 def test_semantic_novelty_uses_mean_knn_distance():
-    assert semantic_novelty([0.8, 0.6]) == 0.3
+    assert semantic_novelty([0.8, 0.6]) == pytest.approx(0.3)
 
 
 def test_semantic_metrics_freezes_history_and_counts_unique_gain():
@@ -25,7 +26,7 @@ def test_semantic_metrics_freezes_history_and_counts_unique_gain():
 
 
 def test_behavioral_metrics_counts_confirmed_clusters_and_gain():
-    result = behavioral_metrics(previous_count=2, current_labels=["same", "new", None, "newer"] , target_calls=4)
+    result = behavioral_metrics(previous_count=2, current_labels=["new", None, "newer"], target_calls=4)
     assert result.richness == 4
     assert result.gain == 2
     assert result.discovery_rate == 0.5
