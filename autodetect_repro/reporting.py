@@ -312,13 +312,6 @@ def _initial_point_keys(manifest: Dict[str, object]) -> set:
     return keys
 
 
-def _phase_row(metrics: Metrics, phase: str) -> Optional[MetricRow]:
-    return next(
-        (row for row in metrics.rows if row.level == "phase" and row.key == phase),
-        None,
-    )
-
-
 def write_report(run_dir: Path) -> ReportPaths:
     run_dir = Path(run_dir)
     manifest = _load_manifest(run_dir)
@@ -360,6 +353,9 @@ def write_report(run_dir: Path) -> ReportPaths:
     )
     trend_text = "decreased" if decreased else "did not decrease"
     fraction = (planned / 555.0) * 100
+    branch_status = _branch_status(run_dir)
+    promotion_decisions = _promotion_decisions(run_dir)
+    diversity = _diversity_metrics(run_dir)
     report = """# AutoDetect Small-Scale Reproduction
 
 ## Scope
@@ -381,6 +377,16 @@ def write_report(run_dir: Path) -> ReportPaths:
 - Mean score: {mean_score}
 - Adaptive mean score {trend_text} relative to the seed phase.
 
+## Behavioral Diversity
+
+{behavioral_diversity}
+
+## Branch & Promotion
+
+{branch_summary}
+
+{promotion_summary}
+
 ## Recorded Evaluation Usage
 
 - Requests: {requests}
@@ -400,6 +406,9 @@ def write_report(run_dir: Path) -> ReportPaths:
             "N/A" if overall.mean_score is None else "{:.2f}".format(overall.mean_score)
         ),
         trend_text=trend_text,
+        behavioral_diversity=diversity,
+        branch_summary=branch_status,
+        promotion_summary=promotion_decisions,
         requests=metrics.request_count,
         prompt_tokens=metrics.prompt_tokens,
         completion_tokens=metrics.completion_tokens,
@@ -407,3 +416,114 @@ def write_report(run_dir: Path) -> ReportPaths:
     )
     paths.markdown.write_text(report, encoding="utf-8")
     return paths
+
+
+def _branch_status(run_dir: Path) -> str:
+    """Return a markdown summary of branch_update events from events.jsonl.
+
+    Shows branch_id, status, and supporting sample count for every
+    branch_update event.  Returns "(no branch events)" if the file is
+    absent or empty.
+    """
+    events_path = run_dir / "events.jsonl"
+    if not events_path.exists():
+        return "_(no events.jsonl)_"
+    rows = []
+    latest_by_branch: Dict[str, Dict[str, Any]] = {}
+    with events_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("event_type") != "branch_update":
+                continue
+            latest_by_branch[event["branch_id"]] = event
+    if not latest_by_branch:
+        return "_(no branch_update events)_"
+    lines = ["| branch_id | status | supporting_samples |",
+             "| --- | --- | --- |"]
+    for branch_id, event in latest_by_branch.items():
+        samples = ",".join(event.get("supporting_samples", [])) or "—"
+        lines.append(
+            "| `{branch}` | {status} | {samples} |".format(
+                branch=branch_id, status=event.get("status", "?"), samples=samples
+            )
+        )
+    return "\n".join(lines)
+
+
+def _promotion_decisions(run_dir: Path) -> str:
+    """Return a markdown summary of promotion_proposal events."""
+    events_path = run_dir / "events.jsonl"
+    if not events_path.exists():
+        return "_(no events.jsonl)_"
+    decisions = []
+    with events_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("event_type") != "promotion_proposal":
+                continue
+            decisions.append(event)
+    if not decisions:
+        return "_(no promotion_proposal events)_"
+    lines = ["| branch_id | decision | knowledge_point | reason |",
+             "| --- | --- | --- | --- |"]
+    for event in decisions:
+        lines.append(
+            "| `{branch}` | {decision} | {kp} | {reason} |".format(
+                branch=event.get("branch_id", "?"),
+                decision=event.get("decision", "?"),
+                kp=event.get("knowledge_point", "?"),
+                reason=event.get("reason", "?"),
+            )
+        )
+    return "\n".join(lines)
+
+
+def _diversity_metrics(run_dir: Path) -> str:
+    """Return a markdown summary of the latest diversity_metrics event."""
+    events_path = run_dir / "events.jsonl"
+    if not events_path.exists():
+        return "_(no events.jsonl)_"
+    latest = None
+    with events_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("event_type") == "diversity_metrics":
+                latest = event
+    if latest is None:
+        return "_(no diversity_metrics events)_"
+    return (
+        "- Behavioral richness: **{richness}**\n"
+        "- Unique question gain: **{gain}**\n"
+        "- Discovery rate: **{rate:.2%}**\n"
+        "- Target calls (until report): **{calls}**"
+    ).format(
+        richness=latest.get("richness", 0),
+        gain=latest.get("gain", 0),
+        rate=latest.get("discovery_rate", 0.0),
+        calls=latest.get("target_calls", 0),
+    )
+
+
+def _phase_row(metrics: Metrics, phase: str) -> Optional[IterationRow]:
+    return next(
+        (row for row in metrics.iterations if row.phase == phase),
+        None,
+    )
