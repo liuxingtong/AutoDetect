@@ -1,5 +1,7 @@
 """Capped, resumable AutoDetect experiment scheduling."""
 
+import json
+import os
 import random as _random
 
 from dataclasses import dataclass, replace
@@ -160,6 +162,19 @@ class ExperimentRunner:
                 and self.config.search.auto_promote
             ):
                 self._schedule_verification(point, question, record)
+            # Independently of verification, re-evaluate the promotion
+            # gate after every weakness observation.  Earlier runs only
+            # consulted the gate inside _schedule_verification, which
+            # meant the second weakness in a branch fired _before_ the
+            # branch had accumulated two supporting samples.  The gate
+            # could therefore never PROMOTE.  Calling it here, after
+            # observe() has added the sample, lets the gate see the
+            # full supporting set.
+            if (
+                record.status == "valid"
+                and record.is_weakness
+            ):
+                self._propose_after_observation(point, record)
         return True
 
     def _schedule_verification(
@@ -197,12 +212,14 @@ class ExperimentRunner:
             return
         self._append(verify_record)
         if self.analysis_pipeline is not None and self.store is not None:
-            # If the verification failed (or was not weak), treat the
-            # original as a counterexample.  Otherwise record it as
-            # verification evidence.
             branch_id = "{}:{}".format(
                 point.name, original.key_point or "violation"
             )
+            # If the verification failed (or was not weak), treat the
+            # original as a counterexample.  Otherwise record it as
+            # verification evidence.  The promotion gate is consulted
+            # by ``_propose_after_observation`` after each weakness
+            # observation, so we no longer need a second call here.
             if verify_record.status != "valid" or not verify_record.is_weakness:
                 for event_type, payload in self.analysis_pipeline.record_counterexample(
                     branch_id, verify_record.sample_id
@@ -213,16 +230,109 @@ class ExperimentRunner:
                     branch_id, verify_record.sample_id
                 ):
                     self.store.append_event(event_type, payload)
-            # After verification, ask the BranchManager to propose a
-            # decision.  We use the conservative "all branches not
-            # independent" default; semantic independence is left to
-            # future work where the controller inspects iteration /
-            # phase / seed spacing.
-            for _proposal, (event_type, payload) in self.analysis_pipeline.propose_promotions(
-                auto_promote=self.config.search.auto_promote,
-                semantic_independence={},
+            # Re-evaluate the gate after verification so a branch that
+            # was waiting for a verification to PROMOTE can do so
+            # without waiting for the next weakness observation.
+            if (
+                self.store is not None
+                and self.config.search.auto_promote
             ):
-                self.store.append_event(event_type, payload)
+                independence = self._branch_independence_map()
+                for _proposal, (event_type, payload) in self.analysis_pipeline.propose_promotions(
+                    auto_promote=self.config.search.auto_promote,
+                    semantic_independence=independence,
+                ):
+                    self.store.append_event(event_type, payload)
+                    if payload.get("decision") == "promote":
+                        self._record_promoted_point(
+                            point.group, point.subtask, payload
+                        )
+
+    def _propose_after_observation(
+        self, point: KnowledgePoint, record: SampleRecord
+    ) -> None:
+        """Consult the promotion gate after a weakness observation.
+
+        Called from ``_evaluate`` so the gate sees the latest
+        supporting_samples set, not just the post-verification set
+        (which the original ``_schedule_verification``-only call
+        pattern could not).  No-op when auto_promote is off or the
+        analysis pipeline is not configured.
+        """
+        if not self.config.search.auto_promote:
+            return
+        if self.analysis_pipeline is None or self.store is None:
+            return
+        independence = self._branch_independence_map()
+        for _proposal, (event_type, payload) in self.analysis_pipeline.propose_promotions(
+            auto_promote=self.config.search.auto_promote,
+            semantic_independence=independence,
+        ):
+            self.store.append_event(event_type, payload)
+            if payload.get("decision") == "promote":
+                self._record_promoted_point(
+                    point.group, point.subtask, payload
+                )
+
+    def _branch_independence_map(self) -> Dict[str, bool]:
+        """Return ``{branch_id: semantically_independent}``.
+
+        A branch is independent when its supporting samples come from at
+        least two distinct ``(phase, iteration)`` tuples among the
+        non-verification observations.  Verification (phase="verify",
+        iter=-1) is intentionally excluded so the check measures
+        "different material observations", not "observation + its
+        re-run".  Branches with fewer than two distinct contexts
+        across their supporting samples are not independent.
+        """
+        if self.analysis_pipeline is None:
+            return {}
+        if self.store is None:
+            return {}
+        ids_by_branch: Dict[str, Tuple[str, int]] = {}
+        for record in self._records:
+            if record.phase == "verify":
+                continue
+            ids_by_branch[record.sample_id] = (record.phase, record.iteration)
+        branch_manager = self.analysis_pipeline.branch_manager
+        result: Dict[str, bool] = {}
+        for branch_id, branch in branch_manager._branches.items():
+            contexts = {
+                ids_by_branch[sample_id]
+                for sample_id in branch.supporting_samples
+                if sample_id in ids_by_branch
+            }
+            contexts.discard(None)
+            result[branch_id] = len(contexts) >= 2
+        return result
+
+    def _record_promoted_point(
+        self, group: str, subtask: str, payload: Dict[str, object]
+    ) -> None:
+        """Persist a promoted branch to ``promoted.jsonl`` for resume.
+
+        Written as one JSON object per line so a resumed run can append
+        without rewriting.  The file is human-readable and does not
+        require any matching ``samples.jsonl`` rows to exist.
+        """
+        if self.store is None:
+            return
+        promoted_path = self.run_dir / "promoted.jsonl"
+        knowledge_point = str(payload.get("knowledge_point", "")).strip()
+        branch_id = str(payload.get("branch_id", "")).strip()
+        if not knowledge_point or not branch_id:
+            return
+        line = {
+            "group": group,
+            "subtask": subtask,
+            "knowledge_point": knowledge_point,
+            "branch_id": branch_id,
+        }
+        promoted_path.touch(exist_ok=True)
+        with promoted_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(line, ensure_ascii=True, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
 
     def _record_generation_failure(
         self,
@@ -454,11 +564,57 @@ class ExperimentRunner:
         ]
 
     def _configured_points(self) -> Tuple[KnowledgePoint, ...]:
-        return tuple(
+        configured = tuple(
             KnowledgePoint(subtask.group, subtask.name, name)
             for subtask in self.config.subtasks
             for name in subtask.knowledge_points
         )
+        return configured + self._promoted_points()
+
+    def _promoted_points(self) -> Tuple[KnowledgePoint, ...]:
+        """Read ``promoted.jsonl`` and return one point per unique entry.
+
+        A resumed run appends these to the configured taxonomy so a
+        previously-promoted knowledge point continues to receive seed
+        and adaptive rounds without re-running the discovery phase.
+        Entries that already exist in the configured taxonomy are
+        de-duplicated by casefolded name to avoid double-scheduling.
+        """
+        path = self.run_dir / "promoted.jsonl"
+        if not path.exists():
+            return ()
+        configured_names: set = set()
+        for subtask in self.config.subtasks:
+            for name in subtask.knowledge_points:
+                configured_names.add(name.casefold())
+        out: List[KnowledgePoint] = []
+        seen: set = set()
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return ()
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            group = str(entry.get("group", "")).strip()
+            subtask = str(entry.get("subtask", "")).strip()
+            name = str(entry.get("knowledge_point", "")).strip()
+            if not group or not subtask or not name:
+                continue
+            if name.casefold() in configured_names:
+                continue
+            if name.casefold() in seen:
+                continue
+            seen.add(name.casefold())
+            out.append(KnowledgePoint(group, subtask, name, True))
+        return tuple(out)
 
     def _persisted_discovered_point(
         self, subtask: SubtaskConfig

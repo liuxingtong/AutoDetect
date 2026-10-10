@@ -1,4 +1,5 @@
 from dataclasses import replace
+import json
 from pathlib import Path
 
 import pytest
@@ -51,11 +52,12 @@ class FakeExaminer:
 
 
 class FakeQuestioner:
-    def __init__(self, config, log):
+    def __init__(self, config, log, shared_key_point=False):
         self.config = config
         self.log = log
         self.seed_calls = []
         self.adaptive_calls = []
+        self.shared_key_point = shared_key_point
 
     def generate_seeds(self, point):
         self.seed_calls.append(point.name)
@@ -65,7 +67,7 @@ class FakeQuestioner:
                 point.group,
                 point.subtask,
                 point.name,
-                "seed-key-{}".format(ordinal),
+                point.name if self.shared_key_point else "seed-key-{}".format(ordinal),
                 "seed-prompt-{}-{}".format(point.name, ordinal),
                 "seed",
                 0,
@@ -81,7 +83,7 @@ class FakeQuestioner:
             point.group,
             point.subtask,
             point.name,
-            "adaptive-key",
+            point.name if self.shared_key_point else "adaptive-key",
             "adaptive-prompt-{}-{}".format(point.name, iteration),
             "adaptive",
             iteration,
@@ -495,3 +497,176 @@ def test_runner_schedules_verification_and_promotes_branch_on_reproducible_failu
         if r.phase == "verify"
     ]
     assert verify_records, "expected at least one verify-phase sample"
+
+
+# ---------------------------------------------------------------------------
+# Independence map + promoted.jsonl writeback (Phase G wire-up).
+# ---------------------------------------------------------------------------
+
+
+def test_two_distinct_phases_yield_promote_decision(tmp_path):
+    """PROMOTE requires semantically independent supporting samples.
+
+    With seeds=1 and adaptive=1, the two weakness samples live in two
+    different ``(phase, iteration)`` tuples, so independence is True
+    and the deterministic gate returns PROMOTE.
+    """
+    config = small_config(points=1, seeds=1, adaptive=1)
+    config = replace(config, search=replace(config.search, auto_promote=True))
+    run_dir = tmp_path / "run"
+
+    from autodetect_repro.analysis_pipeline import AdaptiveAnalysisPipeline
+    from autodetect_repro.behavior import BehaviorLabel, FailureSignature
+    from autodetect_repro.branches import BranchManager
+
+    pipeline = AdaptiveAnalysisPipeline(
+        signature_extractor=lambda record: FailureSignature(
+            violation=record.key_point or "v",
+            observed_behavior="b",
+            trigger_context="c",
+            evidence="e",
+        ),
+        behavior_classifier=lambda s, r: BehaviorLabel.DIFFERENT,
+        branch_manager=BranchManager(min_support=2),
+    )
+    runner = ExperimentRunner(
+        config,
+        run_dir,
+        examiner=FakeExaminer(
+            [KnowledgePoint("group", "subtask", "point-0")], []
+        ),
+        questioner=FakeQuestioner(config, [], shared_key_point=True),
+        evaluator=FakeEvaluator([]),
+        assessor=FakeAssessor(AssessorDecision(False, None, "stop"), []),
+        analysis_pipeline=pipeline,
+    )
+    runner.run()
+
+    events = CheckpointStore(run_dir, config).events()
+    promotion_events = [
+        e for e in events if e.get("event_type") == "promotion_proposal"
+    ]
+    assert promotion_events, "expected a promotion_proposal event"
+    promote = [
+        e for e in promotion_events if e.get("decision") == "promote"
+    ]
+    assert promote, "expected decision=promote when phases are distinct"
+
+
+def test_single_phase_yields_continue_decision(tmp_path):
+    """One (phase, iteration) tuple ⇒ independence False ⇒ CONTINUE.
+
+    With seeds=2 and adaptive=0, both weakness samples share the same
+    ``(seed, 0)`` context, so independence is False and the gate
+    returns CONTINUE regardless of auto_promote.
+    """
+    config = small_config(points=1, seeds=2, adaptive=0)
+    config = replace(config, search=replace(config.search, auto_promote=True))
+    run_dir = tmp_path / "run"
+
+    from autodetect_repro.analysis_pipeline import AdaptiveAnalysisPipeline
+    from autodetect_repro.behavior import BehaviorLabel, FailureSignature
+    from autodetect_repro.branches import BranchManager
+
+    pipeline = AdaptiveAnalysisPipeline(
+        signature_extractor=lambda record: FailureSignature(
+            violation=record.key_point or "v",
+            observed_behavior="b",
+            trigger_context="c",
+            evidence="e",
+        ),
+        behavior_classifier=lambda s, r: BehaviorLabel.DIFFERENT,
+        branch_manager=BranchManager(min_support=2),
+    )
+    runner = ExperimentRunner(
+        config,
+        run_dir,
+        examiner=FakeExaminer(
+            [KnowledgePoint("group", "subtask", "point-0")], []
+        ),
+        questioner=FakeQuestioner(config, [], shared_key_point=True),
+        evaluator=FakeEvaluator([]),
+        assessor=FakeAssessor(AssessorDecision(False, None, "stop"), []),
+        analysis_pipeline=pipeline,
+    )
+    runner.run()
+
+    events = CheckpointStore(run_dir, config).events()
+    promotion_events = [
+        e for e in events if e.get("event_type") == "promotion_proposal"
+    ]
+    assert promotion_events
+    decisions = {e.get("decision") for e in promotion_events}
+    assert "promote" not in decisions, (
+        "single-phase samples must not promote: got {}".format(decisions)
+    )
+
+
+def test_promoted_branch_writes_promoted_jsonl(tmp_path):
+    """A PROMOTE with auto_promote=True appends to ``promoted.jsonl``."""
+    config = small_config(points=1, seeds=1, adaptive=1)
+    config = replace(config, search=replace(config.search, auto_promote=True))
+    run_dir = tmp_path / "run"
+
+    from autodetect_repro.analysis_pipeline import AdaptiveAnalysisPipeline
+    from autodetect_repro.behavior import BehaviorLabel, FailureSignature
+    from autodetect_repro.branches import BranchManager
+
+    pipeline = AdaptiveAnalysisPipeline(
+        signature_extractor=lambda record: FailureSignature(
+            violation=record.key_point or "v",
+            observed_behavior="b",
+            trigger_context="c",
+            evidence="e",
+        ),
+        behavior_classifier=lambda s, r: BehaviorLabel.DIFFERENT,
+        branch_manager=BranchManager(min_support=2),
+    )
+    runner = ExperimentRunner(
+        config,
+        run_dir,
+        examiner=FakeExaminer(
+            [KnowledgePoint("group", "subtask", "point-0")], []
+        ),
+        questioner=FakeQuestioner(config, [], shared_key_point=True),
+        evaluator=FakeEvaluator([]),
+        assessor=FakeAssessor(AssessorDecision(False, None, "stop"), []),
+        analysis_pipeline=pipeline,
+    )
+    runner.run()
+
+    promoted_path = run_dir / "promoted.jsonl"
+    assert promoted_path.exists(), "expected promoted.jsonl after a PROMOTE"
+    lines = promoted_path.read_text(encoding="utf-8").splitlines()
+    assert lines, "promoted.jsonl should have at least one line"
+    entry = json.loads(lines[0])
+    assert entry["knowledge_point"] == "point-0"
+    assert entry["group"] == "group"
+    assert entry["subtask"] == "subtask"
+
+
+def test_resume_loads_promoted_points_as_discovered(tmp_path):
+    """A resume that finds ``promoted.jsonl`` treats promoted points as
+    discovered knowledge points even when no sample carries their name."""
+    config = small_config(points=1, seeds=1, adaptive=0)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    promoted_path = run_dir / "promoted.jsonl"
+    promoted_path.write_text(
+        json.dumps(
+            {
+                "group": "group",
+                "subtask": "subtask",
+                "knowledge_point": "promoted-x",
+                "branch_id": "promoted-x:v",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    runner, _, _, _, _ = make_runner(config, run_dir)
+    points = runner._configured_points()
+    promoted = [point for point in points if point.name == "promoted-x"]
+    assert len(promoted) == 1
+    assert promoted[0].discovered is True
