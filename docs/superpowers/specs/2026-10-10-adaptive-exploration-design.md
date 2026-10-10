@@ -110,24 +110,70 @@ Runtime 负责非空、可解析、自包含、候选 id 唯一和题目文本�
 
 Runner 必须继续支持中断、恢复、最大总样本限制、请求失败记录和旧 `samples.jsonl`。旧 checkpoint 没有新增事件时，应按 baseline 兼容运行。
 
-## 6. 持久化与兼容性
+## 6. 题目与行为多样性测量
 
-在现有 `CheckpointStore` 旁增加 append-only 事件文件（建议 `events.jsonl`），事件类型包括 `search_decision`、`candidate_filter`、`failure_analysis`、`branch_update` 和 `promotion_proposal`。事件内容必须脱敏，不得写入 API key。
+多样性采用两层评价，且不预先定义 failure taxonomy：
+
+### 6.1 Semantic Diversity（测试前）
+
+Novelty Filter 对候选题从固定的“历史题库快照”检索 Top-K 近邻，计算：
+
+\[
+N_{sem}(q)=1-\frac{1}{k}\sum_{i\in kNN(q,A)}\cos(e_q,e_i)
+\]
+
+该值只用于候选排序和轮次统计，不直接等价于行为新颖性。LLM 将候选与近邻判为 `Duplicate`、`Related` 或 `Distinct`：过滤明确 Duplicate，保留 Related/Distinct，并为 Uncertain 保留少量抽样机会。每轮固定使用迭代开始前的历史题库，并对本轮候选内部去重。
+
+每轮记录：
+
+- `semantic_novelty`：本轮新题的平均 `N_sem`；
+- `unique_question_gain`：本轮新增非重复有效题数。
+
+Embedding 的平均近邻距离必须通过人工标注题目对进行离线校准；不得把单一最大相似度或该分数本身当作最终重复判定。
+
+### 6.2 Behavioral Diversity（测试后）
+
+Evaluator 将确认失败转换为结构化 Failure Signature，只描述可观察行为和触发条件，不直接声称内部原因：
+
+```json
+{
+  "violation": "忽略否定约束",
+  "observed_behavior": "输出了禁止出现的数字",
+  "trigger_context": "多个约束同时存在",
+  "evidence": "回答包含2026"
+}
+```
+
+Behavioral Novelty Analyzer 使用 LLM 将新 Failure Signature 与已有行为簇代表案例归并为 `Same`、`Different` 或 `Uncertain`。Uncertain 不计入已确认的新行为簇；新行为先进入候选簇，不自动升级 taxonomy。行为归并边界需要用小规模人工标注案例校准，避免把同类错误随意拆细。
+
+每轮记录：
+
+- `behavioral_richness`：截至当前轮累计确认的行为簇数 `K_t`；
+- `behavioral_gain`：`K_t-K_{t-1}`；
+- `discovery_rate`：`behavioral_gain / 本轮 Target 调用次数`。
+
+正式对比 baseline 与改进方法时，须将两者失败案例合并后使用同一离线归并标准，并按首次发现时间回算轮次指标，避免分类口径差异。
+
+## 7. 持久化与兼容性
+
+在现有 `CheckpointStore` 旁增加 append-only 事件文件（建议 `events.jsonl`），事件类型包括 `search_decision`、`candidate_filter`、`failure_analysis`、`behavior_cluster_update`、`diversity_metrics`、`branch_update` 和 `promotion_proposal`。事件内容必须脱敏，不得写入 API key。
 
 manifest schema version 递增；读取旧版本时使用空事件流和默认 branch 状态。事件写入失败不得导致已成功保存的 SampleRecord 被回滚，Runner 应记录可恢复错误并停止当前轮。
 
-## 7. Prompt 合同
+## 8. Prompt 合同
 
 `prompts.py` 增加四个结构化 Prompt：
 
 - Controller：输入 taxonomy、branch statistics、recent cases、budget；输出策略、objective、reason、candidate/test budget。
 - Questioner：输入当前目标、机制假设、历史案例和预算；输出候选题及变化变量。
 - Novelty：输入候选、Top-K 近邻和 objective；输出 substantive-new、相关性、重复类型和 keep/reject/uncertain。
+- Failure Signature：输入 Target 回答、参考答案和程序证据；输出可观察的 violation、observed_behavior、trigger_context 和 evidence。
+- Behavioral Clustering：输入新 Failure Signature 与已有簇代表案例；输出 Same/Different/Uncertain 及理由。
 - Failure/Promotion：输入 Target 回答、参考答案、程序证据、对照案例和历史分支；输出机制假设、验证计划和 promotion decision。
 
 所有 Prompt 必须要求只输出 JSON，并经过现有 structured-call/repair 机制校验。Prompt 不得让 LLM 越权分配预算、直接写入 taxonomy 或把假设描述成事实。
 
-## 8. 配置与运行模式
+## 9. 配置与运行模式
 
 新增显式配置项：
 
@@ -140,26 +186,40 @@ manifest schema version 递增；读取旧版本时使用空事件流和默认 b
 
 缺省配置必须保持当前 baseline 行为。adaptive 模式下仍受 `max_total_samples` 和每轮 test budget 双重限制。
 
-## 9. 测试与验收
+## 10. 测试与验收
 
 单元测试至少覆盖：
 
 - 新数据类型 JSON 序列化和旧 checkpoint 恢复；
 - Controller 输出解析、非法目标、预算截断和 fallback；
 - 硬规则过滤、完全重复、Top-K 召回和 uncertain 保留；
+- Semantic Novelty 的平均 kNN 距离、历史快照冻结和 Unique Question Gain；
+- Failure Signature 结构化输出、Same/Different/Uncertain 归并和 Behavioral Gain/Discovery Rate；
 - branch 状态转换、支持证据/反例计数和 promotion gate；
 - Runner 中断、恢复、请求失败和事件追加；
 - baseline 模式回归现有测试行为。
 
 离线评估至少比较 `baseline`、`adaptive_rule` 和 `adaptive_llm`：相同 Target 调用预算下的有效失败数、非重复有效失败数、新颖失败发现率、后期停滞程度和失败机制多样性。不得只用 embedding 距离作为“新颖失败”的唯一指标。
 
-## 10. 实施顺序
+## 11. 重新规划的实施顺序
 
-1. 类型、事件 checkpoint 和兼容读取。
-2. Novelty Filter（规则 → 表示召回 → LLM 边界判断）。
-3. Evaluator failure analysis 与 Branch Manager。
-4. RuleController 与 Runner 集成。
-5. LLMController、Prompts 和 feature flag。
-6. Promotion proposal、离线对照实验和报告。
+按依赖和研究价值重新排序，并要求每阶段独立提交：
+
+1. **阶段 A：多样性核心与数据契约**
+   - 增加 Semantic/Behavioral 指标类型、纯函数测量器、Failure Signature/行为簇数据结构。
+   - 先完成离线测试；不接入网络调用。
+2. **阶段 B：事件 Archive 与兼容恢复**
+   - 扩展事件日志、manifest schema 和旧 checkpoint 读取。
+   - 确保指标和行为簇可恢复、可审计。
+3. **阶段 C：Semantic Novelty Filter**
+   - 实现规则过滤、Embedding Top-K 接口、LLM Duplicate/Related/Distinct 判别和预算选择。
+4. **阶段 D：Evaluator Failure Signature 与 Behavioral Analyzer**
+   - 增加程序化失败证据、LLM 行为归并、候选簇和每轮 Behavioral Gain/Discovery Rate。
+5. **阶段 E：RuleController 与 Runner 集成**
+   - 将语义指标、行为指标和停滞统计反馈给规则 Controller；保持 baseline feature flag。
+6. **阶段 F：LLMController、Branch/Promotion 与 Prompt 完整接入**
+   - LLM 提议探索方向；规则控制预算；默认只生成 promotion proposal。
+7. **阶段 G：离线校准与对照实验**
+   - 人工标注语义题目对和行为归并案例；统一离线归并两套系统；比较 Semantic Novelty、Unique Question Gain、Behavioral Richness、Behavioral Gain 和 Discovery Rate。
 
 每一步都应先补测试，再实现最小改动；不在本设计范围内引入 Bandit 或大规模重构。
