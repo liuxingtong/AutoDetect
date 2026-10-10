@@ -5,12 +5,14 @@ This service wraps embedding models (Qwen3-Embedding-0.6B, etc.) behind a simple
 HTTP API that can be called from any machine, including the local AutoDetect framework.
 
 Usage:
-    # Start server on remote machine
-    python -m autodetect_repro.embedding_server --model /data/liuxingtong/models/Qwen3-Embedding-0.6B
-    
+    # Start server on remote machine (default model path is the
+    # reproduction host's /data/liuxingtong/models/Qwen3-Embedding-0.6B;
+    # override with AUTODETECT_EMBEDDING_MODEL or --model).
+    python -m autodetect_repro.embedding_server --model /path/to/Qwen3-Embedding-0.6B
+
     # Or with custom settings
     python -m autodetect_repro.embedding_server \
-        --model /data/liuxingtong/models/Qwen3-Embedding-0.6B \
+        --model /path/to/Qwen3-Embedding-0.6B \
         --host 0.0.0.0 --port 8080 --device cuda
 
 API Endpoints:
@@ -21,6 +23,7 @@ API Endpoints:
 
 import argparse
 import json
+import os
 import time
 from typing import List, Optional, Sequence
 
@@ -165,8 +168,11 @@ def main():
     parser.add_argument(
         "--model", "-m",
         type=str,
-        default="/data/liuxingtong/models/Qwen3-Embedding-0.6B",
-        help="Path to embedding model"
+        default=os.environ.get(
+            "AUTODETECT_EMBEDDING_MODEL",
+            "/data/liuxingtong/models/Qwen3-Embedding-0.6B",
+        ),
+        help="Path to embedding model (or set AUTODETECT_EMBEDDING_MODEL)"
     )
     parser.add_argument(
         "--host", "-H",

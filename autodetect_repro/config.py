@@ -1,5 +1,6 @@
 """Load and validate reproduction configuration."""
 
+import os
 from pathlib import Path
 from typing import Any, Mapping, Tuple
 
@@ -57,13 +58,23 @@ def _subtasks(raw_subtasks: Any) -> Tuple[SubtaskConfig, ...]:
 
 def _safe_output_root(raw: Any) -> Path:
     output_root = Path(str(raw)).expanduser()
-    required_root = Path("/data/liuxingtong")
+    # The required root is the run-output sandbox on the original
+    # reproduction host.  Operators in other environments can override
+    # with AUTODETECT_OUTPUT_ROOT; the default keeps the original
+    # behavior for the documented reproduction.
+    required_root = Path(
+        os.environ.get("AUTODETECT_OUTPUT_ROOT", "/data/liuxingtong")
+    )
     if not output_root.is_absolute():
-        raise ConfigError("output_root must be an absolute path below /data/liuxingtong")
+        raise ConfigError(
+            "output_root must be an absolute path below {}".format(required_root)
+        )
     try:
         output_root.relative_to(required_root)
     except ValueError as exc:
-        raise ConfigError("output_root must be below /data/liuxingtong") from exc
+        raise ConfigError(
+            "output_root must be below {}".format(required_root)
+        ) from exc
     return output_root
 
 

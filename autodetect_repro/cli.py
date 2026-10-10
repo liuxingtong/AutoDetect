@@ -60,8 +60,13 @@ def _run_dir(config: RunConfig, requested: Optional[Path]) -> Path:
         run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         requested = config.output_root / run_id
     path = requested.expanduser()
-    if not path.is_absolute() or not _is_below(path, Path("/data/liuxingtong")):
-        raise ConfigError("run directory must be below /data/liuxingtong")
+    required_root = Path(
+        os.environ.get("AUTODETECT_OUTPUT_ROOT", "/data/liuxingtong")
+    )
+    if not path.is_absolute() or not _is_below(path, required_root):
+        raise ConfigError(
+            "run directory must be below {}".format(required_root)
+        )
     return path
 
 

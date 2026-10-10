@@ -378,8 +378,14 @@ def create_embedding_service_from_config(config: dict) -> Callable[[str], Sequen
     )
 
 
-# Default configuration for Qwen3-Embedding-0.6B on the remote server
-DEFAULT_MODEL_PATH = "/data/liuxingtong/models/Qwen3-Embedding-0.6B"
+# Default configuration for Qwen3-Embedding-0.6B on the remote server.
+# Operators on other hosts can override with the AUTODETECT_EMBEDDING_MODEL
+# environment variable; the default keeps the documented reproduction
+# working without any setup.
+DEFAULT_MODEL_PATH = os.environ.get(
+    "AUTODETECT_EMBEDDING_MODEL",
+    "/data/liuxingtong/models/Qwen3-Embedding-0.6B",
+)
 
 def get_default_embedding() -> Callable[[str], Sequence[float]]:
     """Get the default embedding function using Qwen3-Embedding-0.6B."""
