@@ -66,6 +66,24 @@ class BranchManager:
         self._branches[branch_id] = branch
         return branch
 
+    def record_counterexample(
+        self, branch_id: str, sample_id: str
+    ) -> BranchState:
+        """Record a sample that contradicts the branch's claimed failure.
+
+        A counterexample is any sample that is "valid" (no error) and
+        for which the branch's failure signature is not exhibited.  When
+        at least one counterexample is recorded the branch cannot be
+        promoted to the taxonomy.
+        """
+        branch = self._branches[branch_id]
+        counterexamples = branch.counterexamples
+        if sample_id not in counterexamples:
+            counterexamples += (sample_id,)
+        branch = replace(branch, counterexamples=counterexamples)
+        self._branches[branch_id] = branch
+        return branch
+
     def propose(self, branch_id: str, *, semantically_independent: bool) -> PromotionProposal:
         branch = self._branches[branch_id]
         enough_support = len(branch.supporting_samples) >= self.min_support

@@ -1,10 +1,15 @@
 """Post-evaluation adaptive analysis separated from experiment scheduling."""
 
 from dataclasses import asdict, replace as _dataclass_replace
-from typing import Any, Callable, Dict, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Sequence, Tuple
 
 from .behavior import BehaviorLabel, BehavioralAnalyzer, FailureSignature
-from .branches import BranchManager, BranchState
+from .branches import (
+    BranchManager,
+    BranchState,
+    PromotionDecision,
+    PromotionProposal,
+)
 from .types import SampleRecord
 
 
@@ -52,6 +57,94 @@ class AdaptiveAnalysisPipeline:
                 },
             ),
         )
+
+    def record_verification(
+        self, branch_id: str, verification_id: str
+    ) -> Tuple[Event, ...]:
+        """Mark a sample as having been re-run as a controlled verification.
+
+        Verification provides the controlled-comparison evidence required by
+        :meth:`BranchManager.propose` before the branch can be promoted to
+        the taxonomy.
+        """
+        if branch_id not in self.branch_manager._branches:
+            return ()
+        branch = self.branch_manager.record_verification(branch_id, verification_id)
+        return (
+            (
+                "branch_update",
+                {
+                    "branch_id": branch.branch_id,
+                    "status": branch.status,
+                    "verifications": list(branch.verifications),
+                },
+            ),
+        )
+
+    def record_counterexample(
+        self, branch_id: str, sample_id: str
+    ) -> Tuple[Event, ...]:
+        """Mark a sample as contradicting the branch's claimed failure.
+
+        Any branch with at least one counterexample is barred from
+        promotion until the counterexample is overturned.
+        """
+        if branch_id not in self.branch_manager._branches:
+            return ()
+        branch = self.branch_manager.record_counterexample(branch_id, sample_id)
+        return (
+            (
+                "branch_update",
+                {
+                    "branch_id": branch.branch_id,
+                    "status": branch.status,
+                    "counterexamples": list(branch.counterexamples),
+                },
+            ),
+        )
+
+    def propose_promotions(
+        self,
+        *,
+        auto_promote: bool,
+        semantic_independence: Dict[str, bool],
+    ) -> List[Tuple[PromotionProposal, Tuple[str, dict]]]:
+        """Ask the BranchManager to propose a decision for every tracked branch.
+
+        ``semantic_independence`` is a mapping from ``branch_id`` to whether
+        the supporting samples come from materially different contexts
+        (different phases, iterations, or seeds).  When the mapping is
+        missing for a branch the conservative default is "not independent"
+        so we never promote on insufficient evidence.
+
+        When ``auto_promote`` is True, decisions that BranchManager.propose
+        decides to PROMOTE are kept and the branch status becomes
+        "promoted".  When False, every decision is still computed and
+        emitted as an audit event, but the branch status is rolled back
+        so the operator can accept the proposal explicitly.
+        """
+        results: List[Tuple[PromotionProposal, Tuple[str, dict]]] = []
+        for branch_id, branch in list(self.branch_manager._branches.items()):
+            semantically_independent = semantic_independence.get(branch_id, False)
+            proposal = self.branch_manager.propose(
+                branch_id, semantically_independent=semantically_independent
+            )
+            if not auto_promote:
+                # Audit mode: roll back any status change made by propose()
+                # so the operator must explicitly accept the proposal.
+                if proposal.decision is PromotionDecision.PROMOTE:
+                    self.branch_manager._branches[branch_id] = _dataclass_replace(
+                        branch, status="verifying"
+                    )
+            payload = {
+                "branch_id": proposal.branch_id,
+                "decision": proposal.decision.value,
+                "knowledge_point": proposal.knowledge_point,
+                "reason": proposal.reason,
+            }
+            event = ("promotion_proposal", payload)
+            results.append((proposal, event))
+        return results
 
     def replay(self, events: Sequence[Dict[str, Any]]) -> None:
         """Rebuild analyzer / branch manager / call counter from a saved log.

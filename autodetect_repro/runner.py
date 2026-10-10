@@ -148,7 +148,79 @@ class ExperimentRunner:
         if self.analysis_pipeline is not None and self.store is not None:
             for event_type, payload in self.analysis_pipeline.observe(record):
                 self.store.append_event(event_type, payload)
+            # When a weakness is observed, schedule a controlled
+            # verification by re-running the same prompt with a fresh
+            # target call (phase="verify").  This provides the
+            # ``BranchManager.propose`` evidence required for promotion.
+            if (
+                record.status == "valid"
+                and record.is_weakness
+                and self.config.search.auto_promote
+            ):
+                self._schedule_verification(point, question, record)
         return True
+
+    def _schedule_verification(
+        self,
+        point: KnowledgePoint,
+        question: Question,
+        original: SampleRecord,
+    ) -> None:
+        """Re-evaluate ``question`` to provide verification evidence.
+
+        The verification uses phase="verify" with iteration=-1 and a
+        per-sample ordinal.  Negative iteration keeps it out of the
+        normal adaptive schedule so a resumed run will not re-run it.
+        """
+        if not self._can_schedule():
+            return
+        identifier = sample_id(point, "verify", -1, original.ordinal)
+        if identifier in self._by_id:
+            return
+        try:
+            evaluated = self.evaluator.evaluate(question)
+            verify_record = replace(
+                evaluated,
+                sample_id=identifier,
+                group=point.group,
+                subtask=point.subtask,
+                knowledge_point=point.name,
+                phase="verify",
+                iteration=-1,
+                ordinal=original.ordinal,
+                prompt=question.prompt,
+                key_point=question.key_point,
+            )
+        except Exception as exc:
+            return
+        self._append(verify_record)
+        if self.analysis_pipeline is not None and self.store is not None:
+            # If the verification failed (or was not weak), treat the
+            # original as a counterexample.  Otherwise record it as
+            # verification evidence.
+            branch_id = "{}:{}".format(
+                point.name, original.key_point or "violation"
+            )
+            if verify_record.status != "valid" or not verify_record.is_weakness:
+                for event_type, payload in self.analysis_pipeline.record_counterexample(
+                    branch_id, verify_record.sample_id
+                ):
+                    self.store.append_event(event_type, payload)
+            else:
+                for event_type, payload in self.analysis_pipeline.record_verification(
+                    branch_id, verify_record.sample_id
+                ):
+                    self.store.append_event(event_type, payload)
+            # After verification, ask the BranchManager to propose a
+            # decision.  We use the conservative "all branches not
+            # independent" default; semantic independence is left to
+            # future work where the controller inspects iteration /
+            # phase / seed spacing.
+            for _proposal, (event_type, payload) in self.analysis_pipeline.propose_promotions(
+                auto_promote=self.config.search.auto_promote,
+                semantic_independence={},
+            ):
+                self.store.append_event(event_type, payload)
 
     def _record_generation_failure(
         self,

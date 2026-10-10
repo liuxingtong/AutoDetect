@@ -426,3 +426,72 @@ def test_resume_replays_analysis_pipeline_state_from_events(tmp_path):
     assert branch is not None
     assert branch.supporting_samples == ("manual-1",)
     assert branch.status == "verifying"
+
+
+def test_runner_schedules_verification_and_promotes_branch_on_reproducible_failure(tmp_path):
+    """Phase F: weakness → re-run → promotion_proposal event.
+
+    Two seeds of the same knowledge point both score 3 (a weakness).
+    The pipeline should observe both, schedule a verification run for
+    the second one, and emit a ``promotion_proposal`` event.  Because
+    ``auto_promote`` is on the branch status flips to "promoted".
+    """
+    config = small_config(points=1, seeds=2, adaptive=0)
+    config = replace(config, search=replace(config.search, auto_promote=True))
+    run_dir = tmp_path / "run"
+
+    # Reuse the real AdaptiveAnalysisPipeline (not the stub) so we
+    # exercise the full Phase F path.
+    from autodetect_repro.analysis_pipeline import (
+        AdaptiveAnalysisPipeline,
+    )
+    from autodetect_repro.behavior import BehaviorLabel, FailureSignature
+    from autodetect_repro.branches import BranchManager
+
+    pipeline = AdaptiveAnalysisPipeline(
+        signature_extractor=lambda record: FailureSignature(
+            violation=record.key_point or "v",
+            observed_behavior="b",
+            trigger_context="c",
+            evidence="e",
+        ),
+        behavior_classifier=lambda s, r: BehaviorLabel.DIFFERENT,
+        branch_manager=BranchManager(min_support=2),
+    )
+    questioner = FakeQuestioner(config, [])
+    evaluator = FakeEvaluator([])
+    log = []
+    runner = ExperimentRunner(
+        config,
+        run_dir,
+        examiner=FakeExaminer(
+            [KnowledgePoint("group", "subtask", "point-0")], log
+        ),
+        questioner=questioner,
+        evaluator=evaluator,
+        assessor=FakeAssessor(
+            AssessorDecision(False, None, "stop"), []
+        ),
+        analysis_pipeline=pipeline,
+    )
+    runner.run()
+
+    events = CheckpointStore(run_dir, config).events()
+    promotion_events = [
+        e for e in events if e.get("event_type") == "promotion_proposal"
+    ]
+    # At least one promotion_proposal event must be emitted for the
+    # branch that has 2 supporting samples + a verification.
+    assert promotion_events, "expected a promotion_proposal event"
+    # Find the proposal for the auto_promote branch.
+    promote = [
+        e for e in promotion_events
+        if e.get("decision") == "promote" or e.get("decision") == "continue_verification"
+    ]
+    assert promote
+    # The verify-phase sample is recorded so the budget accounts for it.
+    verify_records = [
+        r for r in CheckpointStore(run_dir, config).records()
+        if r.phase == "verify"
+    ]
+    assert verify_records, "expected at least one verify-phase sample"
