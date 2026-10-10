@@ -44,12 +44,30 @@ class SubtaskConfig:
 
 
 @dataclass(frozen=True)
+class EmbeddingConfig:
+    """Optional embedding-service configuration for the semantic novelty filter."""
+
+    enabled: bool
+    type: str  # "remote" | "local" | "huggingface" | "none"
+    base_url: str = ""
+    model_path: str = ""
+    model_name: str = ""
+    api_key_env: str = ""
+    batch_size: int = 32
+    max_length: int = 512
+    normalize: bool = True
+
+
+@dataclass(frozen=True)
 class RunConfig:
     models: ModelConfig
     search: SearchConfig
     limits: LimitsConfig
     subtasks: Tuple[SubtaskConfig, ...]
     output_root: Path
+    embedding: EmbeddingConfig = field(
+        default_factory=lambda: EmbeddingConfig(enabled=False, type="none")
+    )
 
 
 @dataclass(frozen=True)

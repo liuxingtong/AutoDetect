@@ -88,3 +88,54 @@ def test_output_root_must_be_below_data_directory(tmp_path):
 
     with pytest.raises(ConfigError, match="/data/liuxingtong"):
         load_config(path, {"SILICONFLOW_API_KEY": "unit-test-secret"})
+
+
+def test_embedding_section_is_optional_and_disabled_by_default():
+    config = load_config(
+        CONFIG_PATH,
+        {"SILICONFLOW_API_KEY": "unit-test-secret"},
+    )
+    assert config.embedding.enabled is False
+    assert config.embedding.type == "none"
+
+
+def test_remote_embedding_config_is_parsed(tmp_path):
+    raw = yaml.safe_load(CONFIG_PATH.read_text())
+    raw["embedding"] = {
+        "type": "remote",
+        "base_url": "http://115.182.62.246:8080",
+        "batch_size": 16,
+        "max_length": 256,
+        "normalize": False,
+    }
+    path = tmp_path / "embedding.yaml"
+    path.write_text(yaml.safe_dump(raw))
+
+    config = load_config(path, {"SILICONFLOW_API_KEY": "unit-test-secret"})
+
+    assert config.embedding.enabled is True
+    assert config.embedding.type == "remote"
+    assert config.embedding.base_url == "http://115.182.62.246:8080"
+    assert config.embedding.batch_size == 16
+    assert config.embedding.max_length == 256
+    assert config.embedding.normalize is False
+
+
+def test_remote_embedding_without_base_url_is_rejected(tmp_path):
+    raw = yaml.safe_load(CONFIG_PATH.read_text())
+    raw["embedding"] = {"type": "remote"}
+    path = tmp_path / "embedding-bad.yaml"
+    path.write_text(yaml.safe_dump(raw))
+
+    with pytest.raises(ConfigError, match="base_url"):
+        load_config(path, {"SILICONFLOW_API_KEY": "unit-test-secret"})
+
+
+def test_unknown_embedding_type_is_rejected(tmp_path):
+    raw = yaml.safe_load(CONFIG_PATH.read_text())
+    raw["embedding"] = {"type": "imaginary", "base_url": "http://x"}
+    path = tmp_path / "embedding-bad-type.yaml"
+    path.write_text(yaml.safe_dump(raw))
+
+    with pytest.raises(ConfigError, match="embedding.type"):
+        load_config(path, {"SILICONFLOW_API_KEY": "unit-test-secret"})

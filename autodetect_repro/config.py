@@ -5,7 +5,14 @@ from typing import Any, Mapping, Tuple
 
 import yaml
 
-from .types import LimitsConfig, ModelConfig, RunConfig, SearchConfig, SubtaskConfig
+from .types import (
+    EmbeddingConfig,
+    LimitsConfig,
+    ModelConfig,
+    RunConfig,
+    SearchConfig,
+    SubtaskConfig,
+)
 
 
 class ConfigError(ValueError):
@@ -134,10 +141,63 @@ def load_config(path: Path, environ: Mapping[str, str]) -> RunConfig:
             "max_initial_points must equal configured knowledge point count"
         )
 
+    embedding = _embedding_config(raw.get("embedding"))
+
     return RunConfig(
         models=models,
         search=search,
         limits=limits,
         subtasks=subtasks,
         output_root=_safe_output_root(raw.get("output_root", "")),
+        embedding=embedding,
+    )
+
+
+def _embedding_config(raw_embedding: Any) -> EmbeddingConfig:
+    """Parse the optional ``embedding`` section.  Missing or null disables it."""
+    if not raw_embedding:
+        return EmbeddingConfig(enabled=False, type="none")
+    if not isinstance(raw_embedding, dict):
+        raise ConfigError("embedding must be a mapping when provided")
+
+    raw_type = str(raw_embedding.get("type", "")).strip().lower()
+    if raw_type not in {"remote", "local", "huggingface"}:
+        raise ConfigError(
+            "embedding.type must be remote, local, or huggingface"
+        )
+
+    base_url = str(raw_embedding.get("base_url", "")).strip()
+    model_path = str(raw_embedding.get("model_path", "")).strip()
+    model_name = str(raw_embedding.get("model_name", "")).strip()
+
+    if raw_type == "remote" and not base_url:
+        raise ConfigError("embedding.base_url is required for remote type")
+    if raw_type in {"local", "huggingface"} and not model_path and not model_name:
+        raise ConfigError(
+            "embedding.model_path or embedding.model_name is required for local/huggingface"
+        )
+
+    api_key_env = str(raw_embedding.get("api_key_env", "")).strip()
+    try:
+        batch_size = int(raw_embedding.get("batch_size", 32))
+        max_length = int(raw_embedding.get("max_length", 512))
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(
+            "embedding.batch_size and max_length must be integers"
+        ) from exc
+    if batch_size <= 0 or max_length <= 0:
+        raise ConfigError(
+            "embedding.batch_size and max_length must be positive"
+        )
+
+    return EmbeddingConfig(
+        enabled=True,
+        type=raw_type,
+        base_url=base_url,
+        model_path=model_path,
+        model_name=model_name,
+        api_key_env=api_key_env,
+        batch_size=batch_size,
+        max_length=max_length,
+        normalize=bool(raw_embedding.get("normalize", True)),
     )

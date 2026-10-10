@@ -48,6 +48,11 @@ def _public_config(config: RunConfig) -> Dict[str, Any]:
     payload = asdict(config)
     payload["models"].pop("api_key", None)
     payload["output_root"] = str(config.output_root)
+    # The embedding section was added after the first checkpoint schema. Keep
+    # disabled embedding out of the canonical public config so old baseline
+    # manifests remain resumable byte-for-byte.
+    if not config.embedding.enabled:
+        payload.pop("embedding", None)
     return payload
 
 

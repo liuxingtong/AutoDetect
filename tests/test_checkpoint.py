@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -137,6 +138,20 @@ def test_manifest_mismatch_is_rejected(tmp_path, config):
 
     with pytest.raises(CheckpointError, match="fingerprint"):
         CheckpointStore(run_dir, altered)
+
+
+def test_legacy_manifest_without_embedding_is_resumable(tmp_path, config):
+    run_dir = tmp_path / "run"
+    store = CheckpointStore(run_dir, config)
+    manifest = json.loads(store.manifest_path.read_text(encoding="utf-8"))
+    manifest["config"].pop("embedding", None)
+    canonical = json.dumps(
+        manifest["config"], ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+    manifest["config_fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    store.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert CheckpointStore(run_dir, config).events() == []
 
 
 def test_record_containing_secret_is_rejected_before_write(tmp_path, config):
