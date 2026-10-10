@@ -66,21 +66,41 @@ For all codes, we have added `#TODO` comments to indicate places in the code tha
 pip install -r requirements.txt
 ```
 
-### Weakness Detection
-We provide the code for AutoDetect on Instruction-following, Mathematics and Coding tasks, the usage of which are exactly the same. 
+### Weakness Detection (original / legacy)
 
-Here we take Instruction-following task for example. To run AutoDetect, please run the following command.
+The original per-domain entry points (`autodetect_if`, `autodetect_math`,
+`autodetect_code`) have been moved to `legacy/`.  Each is a standalone
+script with hard-coded API key and model-path placeholders.  They are
+not wired into the rest of the package and are preserved here for
+reference and for reproducing the original paper's exact numbers.
+
+To run the original IF task:
 ```bash
-cd autodetect_if/scripts
+cd legacy/autodetect_if/scripts
+# Edit autodetect_if.py to set API_KEY, API_URL, model_path first.
 bash autodetect_if
 ```
 
-The result will be stored under the path `autodetect_if/result`. 
+The result will be stored under the path
+`legacy/autodetect_if/result`.
 
-To calculate the weakness identification success rate, run the following command:
+### Weakness Detection (current / small-scale reproduction)
+
+For the current reproduction, use the unified package in
+`autodetect_repro/`.  See
+[`docs/reproduction_package/`](docs/reproduction_package/) for the
+small-scale configs, the calibration script, and the domain-by-domain
+result reports.  Quick start:
+
 ```bash
-python count_res.py
+export AUTODETECT_OUTPUT_ROOT=/path/to/outputs
+export SILICONFLOW_API_KEY=sk-...
+python -m autodetect_repro run --live \
+    --config configs/siliconflow_smallscale.yaml
 ```
+
+The runner produces `samples.jsonl`, `events.jsonl`, `promoted.jsonl`,
+and `report.md` in the run directory.
 
 
 ## Acknowledgement
