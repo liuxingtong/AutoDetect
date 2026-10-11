@@ -1,5 +1,6 @@
 """Bounded OpenAI-compatible chat client for SiliconFlow."""
 
+import random
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
@@ -123,11 +124,19 @@ class SiliconFlowClient:
             except (requests.Timeout, requests.ConnectionError):
                 reason = "transient transport error"
             except requests.RequestException:
-                retryable = False
+                # Treat all RequestException subclasses as retryable so that
+                # one-off DNS hiccups, reset packets, and other low-level network
+                # glitches never abort a sample.
                 reason = "non-retryable transport error"
+                retryable = True
 
             if not retryable or attempt == self.max_attempts:
                 raise self._error(attempt, status, reason)
-            self._sleep(float(2 ** (attempt - 1)))
+            # Jittered exponential back-off: uniform random fraction of the
+            # nominal delay so that many concurrent batches do not re-stampede
+            # the API at exactly the same moment.
+            base_delay = 2 ** (attempt - 1)
+            jitter = random.random() * base_delay
+            self._sleep(float(base_delay + jitter))
 
         raise self._error(self.max_attempts, None, "attempt limit reached")
