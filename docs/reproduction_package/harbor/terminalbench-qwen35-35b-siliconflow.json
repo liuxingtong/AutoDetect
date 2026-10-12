@@ -1,0 +1,46 @@
+{
+    "job_name": "terminalbench-qwen35-35b-siliconflow",
+    "jobs_dir": "/data/liuxingtong/harbor/jobs",
+    "n_concurrent_trials": 1,
+    "environment": {
+        "type": "docker",
+        "extra_docker_compose": [
+            "/data/liuxingtong/official-benchmarks/compose-host-network.yaml"
+        ]
+    },
+    "verifier": {
+        "env": {
+            "UV_DOWNLOAD_URL": "https://releases.astral.sh/github/uv/releases/download/0.9.5"
+        }
+    },
+    "agents": [
+        {
+            "name": "terminus-2",
+            "model_name": "openai/Qwen/Qwen3.5-35B-A3B",
+            "kwargs": {
+                "api_base": "https://api.siliconflow.cn/v1",
+                "temperature": 0.0,
+                "max_turns": 4,
+                "enable_summarize": false,
+                "interleaved_thinking": false,
+                "llm_kwargs": {
+                    "api_key": "os.environ/SILICONFLOW_API_KEY",
+                    "timeout": 300
+                },
+                "llm_call_kwargs": {
+                    "max_tokens": 8192,
+                    "top_p": 0.95,
+                    "timeout": 300,
+                    "chat_template_kwargs": {
+                        "enable_thinking": false
+                    }
+                }
+            }
+        }
+    ],
+    "tasks": [
+        {
+            "path": "/data/liuxingtong/official-benchmarks/terminal-bench-2"
+        }
+    ]
+}
