@@ -1,6 +1,6 @@
 # TerminalBench 硅基流动 (SiliconFlow) API 运行指南
 
-> 状态：✅ 已就绪
+> 状态：✅ 已就绪（烟雾测试通过，单任务 trial 未跑）
 > 创建时间：2026-10-12
 > 关联 issue：10/11 跑 9B 本地模型 + transformers serve 出现 InternalServerError（见 `run_report.md`），改用 35B-A3B + 硅基流动 API 重跑
 
@@ -141,6 +141,25 @@ tail -f /data/liuxingtong/harbor/jobs/terminalbench-qwen35-35b-siliconflow/job.l
 
 - **根本方案**：在 `run_terminalbench_siliconflow.sh` 推送前先本地 envsubst，详情见 issue 跟踪
 
+### ⚠️ 已知问题：35B-A3B 默认开 thinking（导致 token 浪费）
+
+**2026-10-12 烟雾测试发现**：
+
+- 极简 prompt `"Reply with exactly one word: ok"` 实际消耗 **170 completion_tokens**
+- 其中 **168 tokens 是 `reasoning_content`**（"Thinking Process: 1. Analyze... 2. Evaluate..."）
+- 即使我配了 `chat_template_kwargs: {"enable_thinking": false}`，**硅基流动不认这个字段**
+
+**影响**：
+- terminal-bench 单任务 4 轮 × 168 reasoning tokens = 672 浪费 token/task
+- 全量 80+ 任务预计浪费 ~50k reasoning tokens（按 0.001 元/1k 估算约 0.05 元，影响不大但污染日志）
+
+**未尝试的关闭方法**（按优先级）：
+1. 在请求 body 顶层加 `"thinking": false`（Qwen3 官方 API 用法）
+2. 改用 `chat_template_kwargs: {"enable_thinking": false}` 之外试试 `chat_template_kwargs: {"thinking": false}` / `"do_thinking": false`
+3. 切换到不带动思考的模型（`Qwen/Qwen2.5-32B-Instruct` 或 `Qwen/Qwen3-8B`）—— 见 models list
+
+**修法尚未落地**——下次跑前先查 https://docs.siliconflow.cn/cn/api-reference/chat-completions/chat-completions 看官方推荐的禁用思考参数名。
+
 ### trial 跑得慢
 
 - 单 task timeout: 终端可能跑 10-30 分钟属正常
@@ -168,6 +187,14 @@ harbor run /data/liuxingtong/harbor/jobs/terminalbench-qwen35-9b-bnb4bit-improve
 
 但要保证本地 serve 还在（`pgrep -f "transformers serve.*8101"`），否则要先跑 `run_terminalbench_improved.sh` Phase 1。
 
+## 下次跑前 checklist
+
+- [ ] 已在硅基流动控制台作废旧 key 并生成新 key
+- [ ] 新 key 已写入远端 `~/.bashrc`（或 `docker run -e SILICONFLOW_API_KEY=...`）
+- [ ] 已查 https://docs.siliconflow.cn/cn/api-reference/chat-completions/chat-completions 确认禁 thinking 参数名
+- [ ] 已修改 `terminalbench-qwen35-35b-siliconflow.json` 加禁 thinking 字段
+- [ ] 已确认 `/data` 至少 50GB 空闲（terminal-bench-2 全量需 ~50GB trial log）
+
 ---
 
-文档版本：v1（2026-10-12）
+文档版本：v1.1（2026-10-12：烟雾测试通过，发现 thinking token 浪费问题）
