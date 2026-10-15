@@ -8,14 +8,23 @@ from tests.test_checkpoint import make_record
 
 
 def test_pipeline_ignores_non_failures_and_emits_behavior_events():
+    classifier_calls = []
+
+    def classifier(signature, representatives):
+        classifier_calls.append((signature, representatives))
+        raise AssertionError("taxonomy diversity must not call behavior LLM")
+
     pipeline = AdaptiveAnalysisPipeline(
         signature_extractor=lambda record: FailureSignature("v", "b", "c", "e"),
-        behavior_classifier=lambda signature, representatives: BehaviorLabel.DIFFERENT,
+        behavior_classifier=classifier,
         branch_manager=BranchManager(min_support=2),
     )
     assert pipeline.observe(make_record().__class__(**{**make_record().__dict__, "is_weakness": False})) == ()
     events = pipeline.observe(make_record())
     assert [event[0] for event in events] == ["failure_analysis", "behavior_cluster_update", "diversity_metrics", "branch_update"]
+    assert events[0][1]["taxonomy_branch"] == "list format"
+    assert events[1][1]["label"] == "different"
+    assert classifier_calls == []
 
 
 def test_pipeline_replay_rebuilds_state_from_events():
@@ -32,16 +41,19 @@ def test_pipeline_replay_rebuilds_state_from_events():
         {
             "event_type": "failure_analysis",
             "sample_id": "s1",
+                "taxonomy_branch": "point-A",
             "signature": signature_a.to_dict(),
         },
         {
             "event_type": "failure_analysis",
             "sample_id": "s2",
+                "taxonomy_branch": "point-B",
             "signature": signature_b.to_dict(),
         },
         {
             "event_type": "failure_analysis",
             "sample_id": "s3",
+                "taxonomy_branch": "point-A",
             "signature": signature_c.to_dict(),
         },
         {
@@ -71,8 +83,9 @@ def test_pipeline_replay_rebuilds_state_from_events():
     fresh.replay(events)
 
     assert fresh.target_calls == 3
-    # Three DIFFERENT signatures, so three clusters.
-    assert len(fresh.behavior_analyzer.clusters) == 3
+    # Diversity is measured by taxonomy branch: point-A and point-B yield
+    # two covered branches even though point-A has two signatures.
+    assert len(fresh.behavior_analyzer.clusters) == 2
     # Branch state was restored from the snapshot.
     branch = fresh.branch_manager.get("list format:violation-A")
     assert branch.supporting_samples == ("s1", "s3")

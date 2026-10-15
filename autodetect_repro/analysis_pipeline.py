@@ -39,7 +39,12 @@ class AdaptiveAnalysisPipeline:
         if record.status != "valid" or not record.is_weakness:
             return ()
         signature = self.signature_extractor(record)
-        label = self.behavior_analyzer.add(signature, self.behavior_classifier)
+        # The simple diversity mode uses the configured taxonomy branch as
+        # the unit of measurement.  This avoids an additional LLM clustering
+        # decision (and the old uncertain state) while preserving the
+        # behavior event shape for existing reports.
+        taxonomy_branch = record.knowledge_point or "unknown"
+        label = self.behavior_analyzer.add_taxonomy(signature, taxonomy_branch)
         branch_id = "{}:{}".format(record.knowledge_point, signature.violation)
         branch = self.branch_manager.record_support(
             branch_id,
@@ -49,8 +54,8 @@ class AdaptiveAnalysisPipeline:
         )
         metrics = self.behavior_analyzer.metrics(target_calls=self.target_calls)
         return (
-            ("failure_analysis", {"sample_id": record.sample_id, "signature": signature.to_dict()}),
-            ("behavior_cluster_update", {"sample_id": record.sample_id, "label": label.value}),
+            ("failure_analysis", {"sample_id": record.sample_id, "taxonomy_branch": taxonomy_branch, "signature": signature.to_dict()}),
+            ("behavior_cluster_update", {"sample_id": record.sample_id, "taxonomy_branch": taxonomy_branch, "label": label.value}),
             ("diversity_metrics", asdict(metrics)),
             (
                 "branch_update",
@@ -207,7 +212,8 @@ class AdaptiveAnalysisPipeline:
             if event_type == "failure_analysis":
                 self.target_calls += 1
                 signature = FailureSignature(**event["signature"])
-                self.behavior_analyzer.add(signature, self.behavior_classifier)
+                taxonomy_branch = event.get("taxonomy_branch") or event["signature"].get("violation", "unknown")
+                self.behavior_analyzer.add_taxonomy(signature, taxonomy_branch)
             elif event_type == "branch_update":
                 branch_id = event["branch_id"]
                 samples = tuple(event.get("supporting_samples", []))

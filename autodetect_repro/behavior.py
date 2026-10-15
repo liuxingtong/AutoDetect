@@ -64,6 +64,25 @@ class BehavioralAnalyzer:
             self._round_new.append(cluster_id)
         return label
 
+    def add_taxonomy(
+        self, signature: FailureSignature, taxonomy_branch: str
+    ) -> BehaviorLabel:
+        """Count taxonomy coverage without an LLM behavior judgment.
+
+        The taxonomy branch is the diversity unit for the simple runtime
+        path.  A branch contributes one cluster the first time it produces a
+        confirmed failure; later failures in that branch are ``same`` for
+        coverage purposes.
+        """
+        branch = str(taxonomy_branch).strip() or "unknown"
+        for cluster in self._clusters:
+            if cluster.cluster_id.endswith(":" + branch):
+                return BehaviorLabel.SAME
+        cluster_id = "behavior-{:04d}:{}".format(len(self._clusters) + 1, branch)
+        self._clusters.append(BehaviorCluster(cluster_id, signature))
+        self._round_new.append(cluster_id)
+        return BehaviorLabel.DIFFERENT
+
     def metrics(self, *, target_calls: int) -> BehavioralMetrics:
         return behavioral_metrics(
             previous_count=len(self._clusters) - len(self._round_new),
