@@ -44,6 +44,18 @@ class BehavioralAnalyzer:
         signature: FailureSignature,
         classify: Callable[[FailureSignature, Sequence[FailureSignature]], BehaviorLabel],
     ) -> BehaviorLabel:
+        # A classifier cannot make a meaningful comparison when there are no
+        # representatives yet.  Treat the first confirmed failure as the
+        # seed of a behavior cluster deterministically.
+        # Besides being the only well-defined answer for an empty reference
+        # set, this prevents ``uncertain`` from becoming a permanent
+        # cold-start deadlock: an uncertain first judgment would otherwise
+        # leave the representatives empty forever.
+        if not self._clusters:
+            cluster_id = "behavior-{:04d}".format(len(self._clusters) + 1)
+            self._clusters.append(BehaviorCluster(cluster_id, signature))
+            self._round_new.append(cluster_id)
+            return BehaviorLabel.DIFFERENT
         representatives = tuple(cluster.representative for cluster in self._clusters)
         label = BehaviorLabel(classify(signature, representatives))
         if label is BehaviorLabel.DIFFERENT:
