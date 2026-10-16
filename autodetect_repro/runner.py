@@ -152,6 +152,19 @@ class ExperimentRunner:
         if self.analysis_pipeline is not None and self.store is not None:
             for event_type, payload in self.analysis_pipeline.observe(record):
                 self.store.append_event(event_type, payload)
+                if (
+                    event_type == "taxonomy_category_update"
+                    and payload.get("status") == "promoted"
+                    and payload.get("category_name")
+                ):
+                    self._record_promoted_point(
+                        point.group,
+                        point.subtask,
+                        {
+                            "knowledge_point": payload["category_name"],
+                            "branch_id": payload.get("category_id", ""),
+                        },
+                    )
             # When a weakness is observed, schedule a controlled
             # verification by re-running the same prompt with a fresh
             # target call (phase="verify").  This provides the
