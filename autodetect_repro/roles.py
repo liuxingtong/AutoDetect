@@ -1,5 +1,7 @@
 """AutoDetect Examiner, Questioner, Evaluator, and Assessor roles."""
 
+import json as _json
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Tuple
 
 from .client import ChatResult, SiliconFlowClient
@@ -75,10 +77,13 @@ class BehavioralClusterer:
     def __init__(self, config: RunConfig, client: SiliconFlowClient) -> None:
         self.config = config
         self.client = client
+        self.last_category_name = ""
 
     def __call__(self, signature, representatives):
         def validate(payload):
-            return BehaviorLabel(str(payload["label"]).lower())
+            label = BehaviorLabel(str(payload["label"]).lower())
+            self.last_category_name = str(payload.get("category_name", "")).strip()
+            return label
         return _structured_call(self.client, behavioral_clustering_prompt(signature.to_dict(), [item.to_dict() for item in representatives]), max_tokens=self.config.limits.max_output_tokens, temperature=0.0, validate=validate)
 
 
@@ -211,13 +216,88 @@ class Examiner:
 
 
 class Questioner:
+    # Package-relative path to the calibration pool.
+    _POOL_PATH = Path(__file__).resolve().parents[1] / "docs" / "reproduction_package" / "calibration" / "semantic_pool.json"
+
     def __init__(self, config: RunConfig, client: SiliconFlowClient) -> None:
         self.config = config
         self.client = client
+        # Build full taxonomy context for seed generation, matching the
+        # original AutoDetect paper pattern.
+        taxonomy_lines: List[str] = []
+        for subtask in config.subtasks:
+            group = subtask.group
+            name = subtask.name
+            for kp in subtask.knowledge_points:
+                taxonomy_lines.append(f"{group} / {name} / {kp}")
+        self._taxonomy_context = (
+            "\n".join(taxonomy_lines) if taxonomy_lines else ""
+        )
+        # Load calibration pool once.
+        self._pool: Optional[List[Dict[str, Any]]] = None
+        if self._POOL_PATH.exists():
+            try:
+                with open(self._POOL_PATH) as fh:
+                    self._pool = _json.load(fh)
+            except Exception:
+                self._pool = None
+
+    def _get_pool_seeds(self, point: KnowledgePoint, count: int) -> Optional[Tuple[Question, ...]]:
+        """Return seed questions drawn from the calibration pool, or None."""
+        pool = self._pool
+        if pool is None:
+            return None
+        # Match pool entry by domain/group and knowledge-point name.
+        candidates: List[Tuple[str, str]] = []  # (prompt, key_point)
+        for entry in pool:
+            domain = entry.get("domain", "")
+            point_name = entry.get("point", "")
+            # Pool domain is "math" or "code"; also handle "math->code" cross-domain.
+            if domain.split("->")[0].strip() != point.group:
+                continue
+            # Pool point format: "algebra / equations_and_inequalities / quadratic_equations"
+            # Match on last segment of pool point vs last segment of knowledge_point.
+            pool_last = point_name.rsplit("/", 1)[-1].strip()
+            kp_last = point.name.rsplit("/", 1)[-1].strip()
+            if pool_last != kp_last and point_name != point.name:
+                continue
+            # Use whichever side (a or b) has lower score — that is the "weak" side.
+            a_score = float(entry.get("a_score", 10))
+            b_score = float(entry.get("b_score", 10))
+            weak_prompt = entry.get("a") if a_score < b_score else entry.get("b")
+            weak_key_point = entry.get("point", point.name)
+            if weak_prompt:
+                candidates.append((weak_prompt, weak_key_point))
+        if not candidates:
+            return None
+        # Shuffle so runs don't always pick the same entry.
+        import random as _random
+        rng = _random.Random(self.config.search.random_seed)
+        rng.shuffle(candidates)
+        chosen = candidates[:count]
+        return tuple(
+            Question(
+                point.group,
+                point.subtask,
+                point.name,
+                kp,
+                prompt,
+                "seed",
+                0,
+                ordinal,
+            )
+            for ordinal, (prompt, kp) in enumerate(chosen)
+        )
 
     def generate_seeds(self, point: KnowledgePoint) -> Tuple[Question, ...]:
         count = self.config.search.seed_questions_per_point
 
+        # ① Try pool first.
+        pool_questions = self._get_pool_seeds(point, count)
+        if pool_questions is not None and len(pool_questions) >= count:
+            return pool_questions
+
+        # ② Fall back to LLM generation.
         def validate(payload: Dict[str, Any]) -> Tuple[Question, ...]:
             raw_questions = payload["questions"]
             if not isinstance(raw_questions, list) or len(raw_questions) != count:
@@ -250,9 +330,9 @@ class Questioner:
         try:
             return _structured_call(
                 self.client,
-                seed_prompt(point, count),
+                seed_prompt(point, count, taxonomy_context=self._taxonomy_context),
                 max_tokens=self.config.limits.max_output_tokens,
-                temperature=0.7,
+                temperature=1.0,
                 validate=validate,
             )
         except RoleError as exc:
@@ -363,11 +443,13 @@ class Evaluator:
     def __init__(
         self,
         target_client: SiliconFlowClient,
+        judge_client: SiliconFlowClient,
         agent_client: SiliconFlowClient,
         *,
         max_tokens: int,
     ) -> None:
         self.target_client = target_client
+        self.judge_client = judge_client
         self.agent_client = agent_client
         self.max_tokens = max_tokens
 
@@ -386,12 +468,12 @@ class Evaluator:
             temperature=0.0,
             max_tokens=self.max_tokens,
         )
-        reference = self.agent_client.complete(
+        reference = self.judge_client.complete(
             [{"role": "user", "content": reference_prompt(question)}],
             temperature=0.0,
             max_tokens=self.max_tokens,
         )
-        judgment = self.agent_client.complete(
+        judgment = self.judge_client.complete(
             [
                 {
                     "role": "user",

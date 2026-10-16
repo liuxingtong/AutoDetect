@@ -39,12 +39,15 @@ class AdaptiveAnalysisPipeline:
         if record.status != "valid" or not record.is_weakness:
             return ()
         signature = self.signature_extractor(record)
-        # The simple diversity mode uses the configured taxonomy branch as
-        # the unit of measurement.  This avoids an additional LLM clustering
-        # decision (and the old uncertain state) while preserving the
-        # behavior event shape for existing reports.
         taxonomy_branch = record.knowledge_point or "unknown"
-        label = self.behavior_analyzer.add_taxonomy(signature, taxonomy_branch)
+        label = self.behavior_analyzer.add_category(signature, self.behavior_classifier)
+        category_id = self.behavior_analyzer.last_category_id
+        category_name = str(getattr(self.behavior_classifier, "last_category_name", "")).strip()
+        category_status = (
+            "promoted" if label is BehaviorLabel.DIFFERENT and category_name
+            else "needs_assessor" if label is BehaviorLabel.DIFFERENT
+            else "matched"
+        )
         branch_id = "{}:{}".format(record.knowledge_point, signature.violation)
         branch = self.branch_manager.record_support(
             branch_id,
@@ -55,7 +58,8 @@ class AdaptiveAnalysisPipeline:
         metrics = self.behavior_analyzer.metrics(target_calls=self.target_calls)
         return (
             ("failure_analysis", {"sample_id": record.sample_id, "taxonomy_branch": taxonomy_branch, "signature": signature.to_dict()}),
-            ("behavior_cluster_update", {"sample_id": record.sample_id, "taxonomy_branch": taxonomy_branch, "label": label.value}),
+            ("behavior_cluster_update", {"sample_id": record.sample_id, "taxonomy_branch": taxonomy_branch, "category_id": category_id, "label": label.value}),
+            ("taxonomy_category_update", {"sample_id": record.sample_id, "group": record.group, "subtask": record.subtask, "taxonomy_branch": taxonomy_branch, "category_id": category_id, "category_name": category_name or None, "status": category_status, "label": label.value}),
             ("diversity_metrics", asdict(metrics)),
             (
                 "branch_update",
@@ -212,8 +216,7 @@ class AdaptiveAnalysisPipeline:
             if event_type == "failure_analysis":
                 self.target_calls += 1
                 signature = FailureSignature(**event["signature"])
-                taxonomy_branch = event.get("taxonomy_branch") or event["signature"].get("violation", "unknown")
-                self.behavior_analyzer.add_taxonomy(signature, taxonomy_branch)
+                self.behavior_analyzer.add_category(signature, self.behavior_classifier)
             elif event_type == "branch_update":
                 branch_id = event["branch_id"]
                 samples = tuple(event.get("supporting_samples", []))

@@ -34,6 +34,7 @@ class BehavioralAnalyzer:
     def __init__(self) -> None:
         self._clusters: List[BehaviorCluster] = []
         self._round_new: List[str] = []
+        self._last_category_id: str = ""
 
     @property
     def clusters(self) -> Sequence[BehaviorCluster]:
@@ -82,6 +83,42 @@ class BehavioralAnalyzer:
         self._clusters.append(BehaviorCluster(cluster_id, signature))
         self._round_new.append(cluster_id)
         return BehaviorLabel.DIFFERENT
+
+    def add_category(
+        self,
+        signature: FailureSignature,
+        classify: Callable[[FailureSignature, Sequence[FailureSignature]], BehaviorLabel],
+    ) -> BehaviorLabel:
+        """Add a peer taxonomy category from a novel failure signature.
+
+        ``uncertain`` is deliberately not exposed in the runtime category
+        path: an unresolved comparison becomes a new category so discovery
+        cannot deadlock or silently discard a failure pattern.  The original
+        signature and classifier result remain in the event log for audit.
+        """
+        if not self._clusters:
+            label = self.add(signature, classify)
+            self._last_category_id = self._clusters[-1].cluster_id
+            return label
+        representatives = tuple(cluster.representative for cluster in self._clusters)
+        label = BehaviorLabel(classify(signature, representatives))
+        if label is BehaviorLabel.SAME:
+            # The binary classifier does not return a matching ID.  Keep the
+            # category event explicit without inventing a new category ID.
+            self._last_category_id = ""
+            return label
+        # Treat an uncertain comparison as a conservative discovery.  This
+        # is the direct-promotion mode: every unresolved novel pattern gets a
+        # peer category immediately and can be audited or merged later.
+        cluster_id = "behavior-{:04d}".format(len(self._clusters) + 1)
+        self._clusters.append(BehaviorCluster(cluster_id, signature))
+        self._round_new.append(cluster_id)
+        self._last_category_id = cluster_id
+        return BehaviorLabel.DIFFERENT
+
+    @property
+    def last_category_id(self) -> str:
+        return self._last_category_id
 
     def metrics(self, *, target_calls: int) -> BehavioralMetrics:
         return behavioral_metrics(

@@ -26,9 +26,11 @@ def failure_signature_prompt(question: str, answer: str, reference: str, evidenc
 
 def behavioral_clustering_prompt(signature, representatives) -> str:
     return (
-        "Compare one Failure Signature with representative behavior clusters. Return JSON only with "
-        "label: Same, Different, or Uncertain, and a reason. Different requires a distinct observed "
-        "behavior or a materially different trigger condition; do not infer hidden causes.\n"
+        "Compare one Failure Signature with representative behavior categories. Return JSON only with "
+        "label: Same or Different, category_name, and a reason. Different requires a distinct observed behavior "
+        "or a materially different trigger condition; do not infer hidden causes. If evidence is "
+        "ambiguous, choose Different so the pattern is preserved as a peer category. For Different, "
+        "category_name must be a concise human-readable taxonomy name; for Same it may be empty.\n"
         "new_signature={signature}\nrepresentatives={representatives}"
     ).format(signature=signature, representatives=representatives)
 
@@ -62,14 +64,27 @@ def examiner_prompt(subtasks: Sequence[SubtaskConfig]) -> str:
     )
 
 
-def seed_prompt(point: KnowledgePoint, count: int) -> str:
+def seed_prompt(point: KnowledgePoint, count: int, taxonomy_context: str = "") -> str:
+    taxonomy_block = (
+        "\nHere is the full domain taxonomy:\n{taxonomy}\n\n"
+    ).format(taxonomy=taxonomy_context) if taxonomy_context else "\n"
     return (
         "Act as the AutoDetect Questioner. Generate exactly {count} diverse, "
-        "self-contained instruction-following tests for the knowledge point "
-        "{point!r} in subtask {subtask!r}. Express the constraint explicitly. "
+        "self-contained, solvable tests for the knowledge point "
+        "{point!r} in subtask {subtask!r}. Express each constraint explicitly "
+        "so it can be verified automatically.{taxonomy}"
+        "Aim for prompts that would result in a low score (less than 4.0), "
+        "indicating genuine difficulty or a subtle constraint the target model "
+        "is likely to violate. Cover different angles (entity, scenario, or "
+        "constraint variant). Do not repeat verbs or phrasing across entries. "
         "Return only JSON as {{\"questions\": [{{\"key_point\": \"...\", "
         "\"prompt\": \"...\"}}]}} with exactly {count} distinct entries."
-    ).format(count=count, point=point.name, subtask=point.subtask)
+    ).format(
+        count=count,
+        point=point.name,
+        subtask=point.subtask,
+        taxonomy=taxonomy_block,
+    )
 
 
 def adaptive_prompt(
@@ -100,9 +115,11 @@ def adaptive_prompt(
     ).format(strategy=strategy, objective=objective) if strategy else ""
     return (
         "Act as the AutoDetect Questioner. Generate one new, solvable and distinct "
-        "test for {point!r}. Use lower-scoring history to expose a deeper weakness "
-        "without copying a previous prompt. Return only JSON with key_point and "
-        "prompt.\nSearch context:\n{context}{strategy_clause}"
+        "test for {point!r} that is likely to score below 4.0. "
+        "Use lower-scoring history to expose a deeper weakness "
+        "without copying a previous prompt. Each prompt should explore a different "
+        "angle (boundary case, edge constraint, unusual combination, etc.). "
+        "Return only JSON with key_point and prompt.\nSearch context:\n{context}{strategy_clause}"
     ).format(
         point=point.name,
         context=json.dumps(context, ensure_ascii=False, sort_keys=True),
@@ -145,7 +162,8 @@ def adaptive_candidates_prompt(
     return (
         "Act as the AutoDetect Questioner. Generate exactly {count} new, solvable "
         "and mutually distinct tests for the knowledge point {point!r}. Each "
-        "candidate must change a meaningful variable (entity, scenario, or "
+        "candidate must be likely to score below 4.0. "
+        "Each candidate must change a meaningful variable (entity, scenario, or "
         "constraint) and must not copy any prior prompt. Return only JSON as "
         "{{\"questions\": [{{\"key_point\": \"...\", \"prompt\": \"...\"}}]}} "
         "with exactly {count} entries.\nSearch context:\n{context}{strategy_clause}"

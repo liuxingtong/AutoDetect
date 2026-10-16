@@ -21,9 +21,10 @@ def test_pipeline_ignores_non_failures_and_emits_behavior_events():
     )
     assert pipeline.observe(make_record().__class__(**{**make_record().__dict__, "is_weakness": False})) == ()
     events = pipeline.observe(make_record())
-    assert [event[0] for event in events] == ["failure_analysis", "behavior_cluster_update", "diversity_metrics", "branch_update"]
+    assert [event[0] for event in events] == ["failure_analysis", "behavior_cluster_update", "taxonomy_category_update", "diversity_metrics", "branch_update"]
     assert events[0][1]["taxonomy_branch"] == "list format"
     assert events[1][1]["label"] == "different"
+    assert events[2][1]["status"] == "needs_assessor"
     assert classifier_calls == []
 
 
@@ -83,9 +84,9 @@ def test_pipeline_replay_rebuilds_state_from_events():
     fresh.replay(events)
 
     assert fresh.target_calls == 3
-    # Diversity is measured by taxonomy branch: point-A and point-B yield
-    # two covered branches even though point-A has two signatures.
-    assert len(fresh.behavior_analyzer.clusters) == 2
+    # Direct-promotion mode treats each DIFFERENT signature as a peer
+    # taxonomy category, including two distinct signatures from point-A.
+    assert len(fresh.behavior_analyzer.clusters) == 3
     # Branch state was restored from the snapshot.
     branch = fresh.branch_manager.get("list format:violation-A")
     assert branch.supporting_samples == ("s1", "s3")
